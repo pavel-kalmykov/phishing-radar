@@ -25,9 +25,9 @@ from pyflink.common.serialization import SimpleStringSchema
 from pyflink.datastream import StreamExecutionEnvironment
 from pyflink.datastream.connectors.kafka import (
     KafkaOffsetsInitializer,
+    KafkaRecordSerializationSchema,
     KafkaSink,
     KafkaSource,
-    KafkaRecordSerializationSchema,
 )
 from pyflink.datastream.window import TumblingEventTimeWindows
 

@@ -14,8 +14,8 @@ import io
 import logging
 import os
 import zipfile
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterator
 
 import dlt
 import requests
@@ -70,9 +70,10 @@ def _save_mmdb(edition: str, target_dir: Path) -> None:
 def asn_blocks() -> Iterator[dict]:
     content = _download_zip(EDITIONS_CSV["asn"])
     for row in _iter_csv(content, "GeoLite2-ASN-Blocks-IPv4.csv"):
+        asn = row["autonomous_system_number"]
         yield {
             "network": row["network"],
-            "autonomous_system_number": int(row["autonomous_system_number"]) if row["autonomous_system_number"] else None,
+            "autonomous_system_number": int(asn) if asn else None,
             "autonomous_system_organization": row["autonomous_system_organization"],
         }
 
@@ -81,11 +82,13 @@ def asn_blocks() -> Iterator[dict]:
 def country_blocks() -> Iterator[dict]:
     content = _download_zip(EDITIONS_CSV["country"])
     for row in _iter_csv(content, "GeoLite2-Country-Blocks-IPv4.csv"):
+        reg = row["registered_country_geoname_id"]
+        rep = row["represented_country_geoname_id"]
         yield {
             "network": row["network"],
             "geoname_id": int(row["geoname_id"]) if row["geoname_id"] else None,
-            "registered_country_geoname_id": int(row["registered_country_geoname_id"]) if row["registered_country_geoname_id"] else None,
-            "represented_country_geoname_id": int(row["represented_country_geoname_id"]) if row["represented_country_geoname_id"] else None,
+            "registered_country_geoname_id": int(reg) if reg else None,
+            "represented_country_geoname_id": int(rep) if rep else None,
             "is_anonymous_proxy": row["is_anonymous_proxy"] == "1",
             "is_satellite_provider": row["is_satellite_provider"] == "1",
         }
