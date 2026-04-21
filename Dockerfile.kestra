@@ -1,0 +1,35 @@
+FROM kestra/kestra:v0.19.12
+
+USER root
+
+# Python 3.11 and uv for the batch tasks, plus git in case a flow still wants
+# to clone something from outside. Kestra runs on OpenJDK-21 Debian; python
+# is not included in the base image.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends python3 python3-pip python3-venv git curl \
+  && rm -rf /var/lib/apt/lists/* \
+  && pip install --no-cache-dir --break-system-packages uv
+
+WORKDIR /opt/phishing-radar
+
+# Install our Python dependencies once at build time so the batch flow can
+# just run `uv run python -m batch.*` without any install step.
+COPY pyproject.toml uv.lock ./
+RUN uv sync --no-dev --frozen && uv add --frozen dbt-core dbt-duckdb
+
+# Ship the batch + dbt code. Streaming code is irrelevant to Kestra.
+COPY batch ./batch
+COPY dbt ./dbt
+
+# Bake the Kestra flows into /app/flows so `micronaut.io.watch` picks them up
+# on boot. Flow YAML lives alongside the code in the repo.
+COPY kestra/flows /app/flows
+RUN chown -R kestra:kestra /app/flows
+
+ENV PATH="/opt/phishing-radar/.venv/bin:${PATH}"
+ENV PYTHONUNBUFFERED=1
+
+USER kestra
+
+ENTRYPOINT ["docker-entrypoint.sh"]
+CMD ["server", "standalone"]

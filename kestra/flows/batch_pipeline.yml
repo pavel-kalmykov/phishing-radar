@@ -3,88 +3,55 @@ namespace: phishing_radar
 description: |
   Daily batch refresh for Phishing Radar.
 
-  Runs the five dlt ingestions (CISA KEV, Feodo, Spamhaus, MITRE, MaxMind CSV),
-  then `dbt run` and `dbt test` against MotherDuck. Cron is controlled by the
-  `BATCH_CRON` input so we can crank it up to `"@hourly"` (or even `"* * * * *"`)
-  during development and drop it back to `"0 6 * * *"` for production.
+  Runs the five dlt ingestions (CISA KEV, Feodo, Spamhaus, MITRE, MaxMind CSV)
+  then `dbt run` and `dbt test` against MotherDuck.
+
+  The batch code and dependencies are baked into the Kestra Docker image at
+  `/opt/phishing-radar`, so each run just invokes the pre-installed entry points
+  through the Process task runner — no cloning or pip installs per run.
+
+  Tweak the `cron` input to test different cadences (e.g. `"*/15 * * * *"`)
+  during development, then set it back to `"0 6 * * *"` for production.
 
 inputs:
   - id: cron
     type: STRING
     defaults: "0 6 * * *"
-    description: Cron expression that drives this flow.
+    description: Cron expression driving this flow.
+
+variables:
+  workdir: /opt/phishing-radar
 
 tasks:
-  - id: ingest_cisa_kev
-    type: io.kestra.plugin.scripts.python.Commands
-    containerImage: ghcr.io/pavel-kalmykov/phishing-radar-batch:latest
-    commands:
-      - python -m batch.ingest_cisa_kev
-    env:
-      MOTHERDUCK_TOKEN: "{{ secret('MOTHERDUCK_TOKEN') }}"
-      DESTINATION__MOTHERDUCK__CREDENTIALS__DATABASE: phishing_radar
-      MD_DATABASE: main
-
-  - id: ingest_feodo
-    type: io.kestra.plugin.scripts.python.Commands
-    containerImage: ghcr.io/pavel-kalmykov/phishing-radar-batch:latest
-    commands:
-      - python -m batch.ingest_feodo
-    env:
-      MOTHERDUCK_TOKEN: "{{ secret('MOTHERDUCK_TOKEN') }}"
-      DESTINATION__MOTHERDUCK__CREDENTIALS__DATABASE: phishing_radar
-      MD_DATABASE: main
-
-  - id: ingest_spamhaus
-    type: io.kestra.plugin.scripts.python.Commands
-    containerImage: ghcr.io/pavel-kalmykov/phishing-radar-batch:latest
-    commands:
-      - python -m batch.ingest_spamhaus
-    env:
-      MOTHERDUCK_TOKEN: "{{ secret('MOTHERDUCK_TOKEN') }}"
-      DESTINATION__MOTHERDUCK__CREDENTIALS__DATABASE: phishing_radar
-      MD_DATABASE: main
-
-  - id: ingest_mitre
-    type: io.kestra.plugin.scripts.python.Commands
-    containerImage: ghcr.io/pavel-kalmykov/phishing-radar-batch:latest
-    commands:
-      - python -m batch.ingest_mitre
-    env:
-      MOTHERDUCK_TOKEN: "{{ secret('MOTHERDUCK_TOKEN') }}"
-      DESTINATION__MOTHERDUCK__CREDENTIALS__DATABASE: phishing_radar
-      MD_DATABASE: main
-
-  - id: ingest_maxmind
-    type: io.kestra.plugin.scripts.python.Commands
-    containerImage: ghcr.io/pavel-kalmykov/phishing-radar-batch:latest
-    commands:
-      - python -m batch.ingest_maxmind
+  - id: ingest
+    type: io.kestra.plugin.scripts.shell.Commands
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
     env:
       MOTHERDUCK_TOKEN: "{{ secret('MOTHERDUCK_TOKEN') }}"
       MAXMIND_LICENSE_KEY: "{{ secret('MAXMIND_LICENSE_KEY') }}"
       DESTINATION__MOTHERDUCK__CREDENTIALS__DATABASE: phishing_radar
+      MD_CATALOG: phishing_radar
       MD_DATABASE: main
-
-  - id: dbt_run
-    type: io.kestra.plugin.scripts.python.Commands
-    containerImage: ghcr.io/pavel-kalmykov/phishing-radar-batch:latest
     commands:
-      - cd dbt && dbt run --profiles-dir .
+      - cd {{ vars.workdir }} && uv run python -m batch.ingest_cisa_kev
+      - cd {{ vars.workdir }} && uv run python -m batch.ingest_feodo
+      - cd {{ vars.workdir }} && uv run python -m batch.ingest_spamhaus
+      - cd {{ vars.workdir }} && uv run python -m batch.ingest_mitre
+      - cd {{ vars.workdir }} && uv run python -m batch.ingest_maxmind
+
+  - id: dbt
+    type: io.kestra.plugin.scripts.shell.Commands
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
     env:
       MOTHERDUCK_TOKEN: "{{ secret('MOTHERDUCK_TOKEN') }}"
       MD_CATALOG: phishing_radar
       MD_DATABASE: main
-
-  - id: dbt_test
-    type: io.kestra.plugin.scripts.python.Commands
-    containerImage: ghcr.io/pavel-kalmykov/phishing-radar-batch:latest
     commands:
-      - cd dbt && dbt test --profiles-dir .
-    env:
-      MOTHERDUCK_TOKEN: "{{ secret('MOTHERDUCK_TOKEN') }}"
-      MD_CATALOG: phishing_radar
-      MD_DATABASE: main
+      - cd {{ vars.workdir }}/dbt && uv run dbt deps --profiles-dir .
+      - cd {{ vars.workdir }}/dbt && uv run dbt run --profiles-dir .
+      - cd {{ vars.workdir }}/dbt && uv run dbt test --profiles-dir .
 
 triggers:
   - id: daily
