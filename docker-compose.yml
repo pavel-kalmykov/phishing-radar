@@ -1,0 +1,78 @@
+services:
+  redpanda:
+    image: redpandadata/redpanda:v24.3.1
+    container_name: phishing-radar-redpanda
+    command:
+      - redpanda start
+      - --overprovisioned
+      - --smp 1
+      - --memory 1G
+      - --reserve-memory 0M
+      - --node-id 0
+      - --check=false
+      - --kafka-addr PLAINTEXT://0.0.0.0:9092
+      - --advertise-kafka-addr PLAINTEXT://redpanda:9092
+    ports:
+      - "9092:9092"
+      - "9644:9644"
+    healthcheck:
+      test: ["CMD", "rpk", "cluster", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - phishing-radar
+
+  redpanda-console:
+    image: redpandadata/console:v2.8.1
+    container_name: phishing-radar-console
+    environment:
+      KAFKA_BROKERS: redpanda:9092
+    ports:
+      - "8080:8080"
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    networks:
+      - phishing-radar
+
+  kestra:
+    image: kestra/kestra:v0.19.12
+    container_name: phishing-radar-kestra
+    user: "root"
+    command: server standalone
+    volumes:
+      - kestra-data:/app/storage
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./kestra/flows:/app/flows
+    environment:
+      KESTRA_CONFIGURATION: |
+        datasources:
+          postgres:
+            url: jdbc:h2:mem:public
+        kestra:
+          server:
+            basic-auth:
+              enabled: false
+          repository:
+            type: memory
+          storage:
+            type: local
+            local:
+              base-path: /app/storage
+          queue:
+            type: memory
+          tasks:
+            tmp-dir:
+              path: /tmp/kestra-wd/tmp
+    ports:
+      - "8081:8080"
+    networks:
+      - phishing-radar
+
+networks:
+  phishing-radar:
+    driver: bridge
+
+volumes:
+  kestra-data:

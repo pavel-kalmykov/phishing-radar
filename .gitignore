@@ -1,0 +1,39 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.DS_Store
+
+# dbt
+dbt/target/
+dbt/dbt_packages/
+dbt/logs/
+
+# Terraform
+terraform/.terraform/
+terraform/.terraform.lock.hcl
+terraform/terraform.tfstate*
+terraform/*.tfvars
+!terraform/*.tfvars.example
+
+# Secrets
+*.json
+!package.json
+!tsconfig.json
+!dbt_packages.json
+.env
+.env.*
+!.env.example
+
+# Kestra
+.kestra/
+kestra-data/
+
+# Local Flink state
+streaming/flink/checkpoints/
+streaming/flink/savepoints/
+
+# MaxMind DB
+*.mmdb
