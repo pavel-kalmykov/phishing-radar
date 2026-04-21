@@ -82,6 +82,7 @@ flowchart LR
 | Certificate Transparency logs (via [certstream-server-go](https://github.com/d-Rickyy-b/certstream-server-go)) | WebSocket | ~200 certs/s | None |
 | CISA KEV catalogue | JSON dump | daily | None |
 | abuse.ch Feodo Tracker | JSON dump | minutes | None |
+| abuse.ch ThreatFox | JSON export | minutes | None |
 | Spamhaus DROP / EDROP | TXT | daily | None |
 | MITRE ATT&CK (Enterprise) | STIX 2 JSON | monthly | None |
 | MaxMind GeoLite2 (CSV) | CSV zip | weekly | Free registration |
@@ -149,11 +150,15 @@ The `.github/workflows/deploy.yml` GitHub Action redeploys the three Python serv
 
 Hosted: **<https://phishing-radar.streamlit.app>** (after you connect Streamlit Cloud to the GitHub repo and set the `MOTHERDUCK_TOKEN` secret).
 
-Three pages:
+Single page with a global filter bar (date range, brand, issuing CA, live refresh toggle) and five tabs:
 
-1. **Landing**: the story plus the headline numbers (CVEs under active exploitation, online C2s, hijacked IP ranges, MITRE-tracked malware, suspicious certificates seen).
-2. **Batch threat intel**: KEV trend, top vendors, active C2 breakdown, Spamhaus buckets.
-3. **Live phishing radar**: most impersonated brands (last 7d), per-CA suspicious-cert ratio per minute, latest flagged certificates.
+1. **Overview**: top impersonated brands in the selected window, active C2s by malware family (hover a bar for a one-line context tooltip).
+2. **Live phishing stream**: hourly volume of flagged certs with the current partial hour flagged, top issuing CAs, latest 50 certificates. Toggling "Live refresh" wraps the tab body in a `st.fragment(run_every="30s")` so it re-queries MotherDuck every half minute without touching the rest of the page.
+3. **Threat landscape**: KEV monthly additions (current month rendered translucent so it isn't compared against complete months), Spamhaus DROP/EDROP buckets, KEV vendors with a ransomware-ratio colour scale, active C2s by hosting country.
+4. **Map**: a `scatter_geo` world map with one dot per country where we see a C2. Dot size is active C2 count, colour is the count gradient, tooltip includes the dominant malware family and a one-liner description.
+5. **Stack**: pipeline, batch and data-source reference panels.
+
+Every widget reads from pre-aggregated marts (`mart_dashboard_kpis`, `mart_dashboard_suspicious_hourly`, `mart_dashboard_top_issuers`, `mart_dashboard_kev_vendors`, `mart_dashboard_kev_monthly`, `mart_dashboard_c2_by_country`) so the page stays fast even as the raw tables grow.
 
 ## Repository layout
 
@@ -178,9 +183,10 @@ Three pages:
 
 ## Tests and quality
 
-- `pytest` covers the typosquatting detector (17 assertions: positives, legitimate domains, edge cases).
-- `ruff check` + `ruff format --check` in CI.
-- `dbt test` runs 11 schema tests plus 2 singular tests (IP format, KEV date sanity).
+- `pytest` covers the typosquatting detector (19 assertions: homoglyph, Cyrillic look-alikes, Damerau-Levenshtein including transpositions, Jaro-Winkler prefix cases, legitimate domains, edge cases).
+- `ruff check` in CI.
+- `dbt test` runs 13 schema tests plus 1 singular test (IP format sanity).
+- Detector design note: `docs/detection_alternatives.md` explains why we moved from Levenshtein to Damerau-Levenshtein + Jaro-Winkler and why MinHash was considered then dropped for this workload.
 - CI workflow at `.github/workflows/ci.yml`.
 
 ## License

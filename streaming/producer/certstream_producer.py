@@ -10,6 +10,7 @@ Designed to be a long-running process. Auto-reconnects on websocket drops.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -69,7 +70,10 @@ def flatten_event(event: dict[str, Any]) -> dict[str, Any] | None:
         "issuer_cn": issuer.get("CN"),
         "issuer_o": issuer.get("O"),
         "issuer_c": issuer.get("C"),
-        "san_count": extensions.get("subjectAltName", "").count("DNS:") if isinstance(extensions.get("subjectAltName"), str) else 0,
+        "san_count": (
+            extensions.get("subjectAltName", "").count("DNS:")
+            if isinstance(extensions.get("subjectAltName"), str) else 0
+        ),
     }
 
 
@@ -181,10 +185,8 @@ class CertStreamProducer:
 
 
 def main() -> int:
-    try:
+    with contextlib.suppress(KeyboardInterrupt):
         asyncio.run(CertStreamProducer().run())
-    except KeyboardInterrupt:
-        pass
     return 0
 
 

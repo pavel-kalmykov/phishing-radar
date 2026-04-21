@@ -9,7 +9,7 @@ Docs: https://github.com/mitre/cti
 from __future__ import annotations
 
 import logging
-from typing import Iterator
+from collections.abc import Iterator
 
 import dlt
 import requests
