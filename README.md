@@ -132,10 +132,32 @@ Expected monthly cost: around 10 EUR (Kestra VM) plus 4 x ~2 EUR for the small a
 
 ## Running it locally
 
-Requirements: Python 3.11+, Docker, [`uv`](https://docs.astral.sh/uv/), [`just`](https://github.com/casey/just).
+### What you need
+
+**Tooling** (one-time install):
+
+| Tool | Install | Why |
+|---|---|---|
+| Python 3.11+ | your OS package manager or [pyenv/mise](https://github.com/jdx/mise) | runtime for every Python service |
+| [`uv`](https://docs.astral.sh/uv/) | `curl -LsSf https://astral.sh/uv/install.sh \| sh` (or `brew install uv`) | Python deps + virtualenv |
+| Docker (+ Compose v2) | [Docker Desktop](https://docs.docker.com/get-docker/) | local Redpanda, certstream-server-go, Kestra |
+| [`just`](https://github.com/casey/just) | `brew install just` / `cargo install just` / `scoop install just` | cross-OS task runner |
+
+**Credentials** (free-tier, copy into `.env` after `cp .env.example .env`):
+
+| Variable | Where to get it | Required for |
+|---|---|---|
+| `MOTHERDUCK_TOKEN` | free account at <https://motherduck.com/> | any step that writes to or reads from MotherDuck (sink, dbt, dashboard) |
+| `MAXMIND_LICENSE_KEY` (+ `MAXMIND_ACCOUNT_ID`) | free registration at <https://www.maxmind.com/en/geolite2/signup> | `batch/ingest_maxmind.py` only (rest of the pipeline runs fine without it; the C2 map just falls back to country-level) |
+| `KAFKA_BOOTSTRAP`, `KAFKA_SASL_*` | free serverless cluster at <https://redpanda.com/> | optional: only needed if you want to reach a cloud broker. For local work, leave the SASL vars empty and the producer/sink talk to the local Redpanda Docker container at `localhost:9092` |
+| `FLY_ACCESS_TOKEN`, `FLY_ORG` | <https://fly.io/> (needs a payment method, but free credit covers the small machines used here) | deploys only; not needed to run locally |
+
+Nothing else is required. CISA KEV, abuse.ch Feodo, abuse.ch ThreatFox, Spamhaus and MITRE ATT&CK feeds are all anonymous (no API keys) and pulled directly over HTTPS.
+
+### Bring everything up
 
 ```bash
-cp .env.example .env        # fill in your MOTHERDUCK_TOKEN (plus Redpanda creds if you have them)
+cp .env.example .env        # fill MOTHERDUCK_TOKEN, optionally MAXMIND_LICENSE_KEY
 just setup                   # install Python deps with uv
 just up                      # docker-compose starts Redpanda + certstream-server-go locally
 just producer &              # CertStream -> Kafka producer
