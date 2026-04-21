@@ -14,8 +14,12 @@ primary_region = "cdg"
   MD_DATABASE = "main"
 
 [[vm]]
+  # 256mb was too tight: Python + confluent-kafka + DuckDB (for MotherDuck
+  # inserts) sits at ~140mb RSS steady-state, so the first Kafka fetch that
+  # doesn't fit the leftover budget OOM-kills the process. Observed a kill
+  # every 3-5 min at 140mb steady RSS; 512mb gives comfortable headroom.
   size = "shared-cpu-1x"
-  memory = "256mb"
+  memory = "512mb"
 
 [processes]
   app = "python -m streaming.sink.kafka_to_md"
