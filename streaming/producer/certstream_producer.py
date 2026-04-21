@@ -14,10 +14,12 @@ import json
 import logging
 import os
 import signal
+import ssl
 import sys
 from datetime import UTC, datetime
 from typing import Any
 
+import certifi
 import websockets
 from confluent_kafka import Producer
 
@@ -28,7 +30,7 @@ logging.basicConfig(
 log = logging.getLogger("certstream-producer")
 
 
-CERTSTREAM_URL = os.getenv("CERTSTREAM_URL", "wss://certstream.calidog.io/")
+CERTSTREAM_URL = os.getenv("CERTSTREAM_URL", "ws://localhost:8090/full-stream")
 KAFKA_BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP", "localhost:9092")
 CERTSTREAM_TOPIC = os.getenv("CERTSTREAM_TOPIC", "certstream_events")
 
@@ -111,11 +113,17 @@ class CertStreamProducer:
 
     async def _consume(self) -> None:
         backoff = 1
+        # Build an SSL context that trusts an explicit CA bundle if provided (e.g. a
+        # corporate MITM proxy CA). Falls back to certifi otherwise.
+        ca_file = os.getenv("SSL_CERT_FILE") or os.getenv("CERTSTREAM_CA_FILE") or certifi.where()
+        ssl_ctx = ssl.create_default_context(cafile=ca_file)
+
         while not self._stop.is_set():
             try:
-                log.info("connecting to %s", CERTSTREAM_URL)
+                log.info("connecting to %s (ca=%s)", CERTSTREAM_URL, ca_file)
                 async with websockets.connect(
                     CERTSTREAM_URL,
+                    ssl=ssl_ctx if CERTSTREAM_URL.startswith("wss://") else None,
                     open_timeout=20,
                     ping_interval=20,
                     ping_timeout=20,

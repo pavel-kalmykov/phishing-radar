@@ -1,0 +1,43 @@
+version: 2
+
+sources:
+  - name: phishing_radar
+    description: Raw tables loaded by dlt ingestion pipelines and the streaming sink
+    database: "{{ env_var('GCP_PROJECT_ID', 'phishing-radar-putopavel') }}"
+    schema: phishing_radar
+    tables:
+      - name: cisa_kev
+        description: CISA Known Exploited Vulnerabilities catalog
+        columns:
+          - name: cve_id
+            tests:
+              - not_null
+              - unique
+      - name: feodo_c2
+        description: abuse.ch Feodo Tracker active C2 IPs
+        columns:
+          - name: ip_address
+            tests:
+              - not_null
+      - name: spamhaus_drop
+        description: Spamhaus DROP and EDROP CIDR blocklists
+        columns:
+          - name: cidr
+            tests:
+              - not_null
+      - name: mitre_techniques
+        description: MITRE ATT&CK Enterprise attack patterns
+        columns:
+          - name: attack_id
+            tests:
+              - not_null
+      - name: mitre_software
+        description: MITRE ATT&CK malware and tools
+      - name: mitre_groups
+        description: MITRE ATT&CK intrusion sets (APTs)
+      - name: raw_suspicious_certs
+        description: Suspicious certificates flagged by the PyFlink detector (landed from Kafka topic `suspicious_certs`)
+      - name: raw_cert_stats_1min
+        description: Per-minute tumbling-window cert issuance stats per CA (landed from Kafka topic `cert_stats_1min`)
+      - name: raw_certstream_events
+        description: Raw CertStream events (landed from Kafka topic `certstream_events`)
