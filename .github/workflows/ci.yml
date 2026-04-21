@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "0.5.x"
+
+      - name: Install dependencies
+        run: uv sync --all-extras
+
+      - name: Ruff check
+        run: uv run ruff check .
+
+      - name: Ruff format check
+        run: uv run ruff format --check .
+
+      - name: Pytest
+        run: uv run pytest -v
+
+      - name: dbt parse (structural compilation)
+        env:
+          MOTHERDUCK_TOKEN: ${{ secrets.MOTHERDUCK_TOKEN }}
+          MD_CATALOG: phishing_radar
+          MD_DATABASE: main
+        run: cd dbt && uv run dbt deps --profiles-dir . && uv run dbt parse --profiles-dir .
+        if: env.MOTHERDUCK_TOKEN != ''
