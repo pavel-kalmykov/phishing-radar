@@ -22,9 +22,12 @@ from streaming.flink.detectors import detect
         ("login-paypal-secure.example.net", "paypal", "brand_as_label"),
         ("microsoft-support.org", "microsoft", "brand_as_label"),
         ("amaz0n-login.net", "amazon", "brand_as_label"),
-        # Rule 3: Levenshtein distance 1..2
-        ("paypai.com", "paypal", "lev_1"),
-        ("amzaon.com", "amazon", "lev_2"),
+        # Rule 1: Unicode homoglyph (Cyrillic look-alikes)
+        ("аpple.com", "apple", "homoglyph"),
+        # Rule 3: Damerau-Levenshtein 1..2 (including transpositions as 1 edit)
+        ("paypai.com", "paypal", "dlev_1"),
+        ("paypla.com", "paypal", "dlev_1"),
+        ("amzaon.com", "amazon", "dlev_1"),
     ],
 )
 def test_typosquatting_positives(domain: str, expected_brand: str, expected_reason: str) -> None:
