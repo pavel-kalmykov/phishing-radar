@@ -12,6 +12,11 @@ RUN apt-get update \
 
 WORKDIR /opt/phishing-radar
 
+# uv manages its own Python toolchain. By default it installs it under /root,
+# which is 700 and unreadable by the non-root `kestra` user at runtime. Point
+# the install dir to a world-readable location.
+ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python
+
 # Install our Python dependencies once at build time so the batch flow can
 # just run `uv run python -m batch.*` without any install step.
 COPY pyproject.toml uv.lock ./
@@ -30,8 +35,8 @@ ENV PATH="/opt/phishing-radar/.venv/bin:${PATH}"
 ENV PYTHONUNBUFFERED=1
 
 # Kestra's Process task runner executes commands as the `kestra` user, so the
-# venv and project dir must be readable by that user.
-RUN chown -R kestra:kestra /opt/phishing-radar
+# venv, project dir and the uv-managed Python must be readable by that user.
+RUN chown -R kestra:kestra /opt/phishing-radar /opt/uv-python
 
 USER kestra
 
