@@ -1,0 +1,40 @@
+version: 2
+
+models:
+  - name: mart_kev_pulse
+    description: CISA KEV entries added in the last year, with freshness buckets
+    columns:
+      - name: cve_id
+        tests:
+          - not_null
+          - unique
+      - name: freshness_bucket
+        tests:
+          - accepted_values:
+              values: ['last_week', 'last_month', 'last_quarter', 'last_year']
+  - name: mart_c2_active
+    description: Currently-online Feodo Tracker C2 IPs with age metrics
+    columns:
+      - name: ip_address
+        tests:
+          - not_null
+      - name: status
+        tests:
+          - accepted_values:
+              values: ['online']
+  - name: mart_c2_mitre_enriched
+    description: mart_c2_active joined with MITRE ATT&CK software catalog
+  - name: mart_spamhaus_by_country
+    description: Spamhaus DROP/EDROP blocks bucketed by prefix size
+  - name: mart_mitre_malware_catalog
+    description: MITRE ATT&CK malware + tools with canonical ATT&CK IDs
+    columns:
+      - name: attack_id
+        tests:
+          - not_null
+  - name: mart_suspicious_certs_daily
+    description: Daily counts of flagged certificates per (brand, category, reason)
+  - name: mart_top_impersonated_brands
+    description: 7-day ranking of most impersonated brands
+  - name: mart_issuer_volume_1min
+    description: Per-minute suspicious-cert ratio per issuing CA (from Flink windows)

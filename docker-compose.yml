@@ -10,8 +10,8 @@ services:
       - --reserve-memory 0M
       - --node-id 0
       - --check=false
-      - --kafka-addr PLAINTEXT://0.0.0.0:9092
-      - --advertise-kafka-addr PLAINTEXT://redpanda:9092
+      - --kafka-addr INTERNAL://0.0.0.0:9093,EXTERNAL://0.0.0.0:9092
+      - --advertise-kafka-addr INTERNAL://redpanda:9093,EXTERNAL://localhost:9092
     ports:
       - "9092:9092"
       - "9644:9644"
@@ -27,14 +27,23 @@ services:
     image: redpandadata/console:v2.8.1
     container_name: phishing-radar-console
     environment:
-      KAFKA_BROKERS: redpanda:9092
+      KAFKA_BROKERS: redpanda:9093
     ports:
-      - "8080:8080"
+      - "8082:8080"
     depends_on:
       redpanda:
         condition: service_healthy
     networks:
       - phishing-radar
+
+  certstream:
+    image: 0rickyy0/certstream-server-go:latest
+    container_name: phishing-radar-certstream
+    ports:
+      - "8090:8080"
+    networks:
+      - phishing-radar
+    restart: unless-stopped
 
   kestra:
     image: kestra/kestra:v0.19.12

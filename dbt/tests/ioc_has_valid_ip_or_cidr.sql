@@ -1,0 +1,5 @@
+-- Custom singular test: every Feodo C2 row must have a dotted IPv4.
+-- Catches accidental schema shifts from upstream (abuse.ch API format drift).
+select ip_address
+from {{ ref('stg_feodo') }}
+where not regexp_contains(ip_address, r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$')

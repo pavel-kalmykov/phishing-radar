@@ -26,6 +26,8 @@ terraform/*.tfvars
 .env
 .env.*
 !.env.example
+.dlt/secrets.toml
+.secrets/
 
 # Kestra
 .kestra/

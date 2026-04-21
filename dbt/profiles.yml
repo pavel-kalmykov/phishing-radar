@@ -1,0 +1,14 @@
+# Local profile. On CI we swap this for one that reads from env.
+phishing_radar:
+  target: dev
+  outputs:
+    dev:
+      type: bigquery
+      method: service-account
+      project: "{{ env_var('GCP_PROJECT_ID', 'phishing-radar-putopavel') }}"
+      dataset: "{{ env_var('BQ_DATASET', 'phishing_radar') }}"
+      keyfile: "{{ env_var('GOOGLE_APPLICATION_CREDENTIALS', '.secrets/pipeline-sa.json') }}"
+      location: "{{ env_var('GCP_REGION', 'europe-southwest1') }}"
+      threads: 4
+      priority: interactive
+      job_execution_timeout_seconds: 600
