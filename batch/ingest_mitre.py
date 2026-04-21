@@ -6,6 +6,7 @@ and technique context.
 
 Docs: https://github.com/mitre/cti
 """
+
 from __future__ import annotations
 
 import logging
@@ -18,10 +19,7 @@ from batch.common import md_pipeline
 
 log = logging.getLogger("ingest-mitre")
 
-ATTACK_URL = (
-    "https://raw.githubusercontent.com/mitre/cti/master/"
-    "enterprise-attack/enterprise-attack.json"
-)
+ATTACK_URL = "https://raw.githubusercontent.com/mitre/cti/master/enterprise-attack/enterprise-attack.json"
 
 
 def _external_id(obj: dict, source: str = "mitre-attack") -> str | None:

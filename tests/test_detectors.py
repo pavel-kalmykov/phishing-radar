@@ -4,6 +4,7 @@ The detector is the one piece of logic that can genuinely ship with bugs (the
 ingestion and sink are mostly glue). These tests lock down a handful of known
 impersonations plus a few legitimate domains that must never be flagged.
 """
+
 from __future__ import annotations
 
 import pytest

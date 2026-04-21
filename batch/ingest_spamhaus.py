@@ -6,6 +6,7 @@ to known spam / malware operators.
 
 Docs: https://www.spamhaus.org/drop/
 """
+
 from __future__ import annotations
 
 import logging

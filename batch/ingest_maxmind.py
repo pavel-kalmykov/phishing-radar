@@ -7,6 +7,7 @@ falls back to CSV-only.
 
 Requires MAXMIND_LICENSE_KEY env var (plus MOTHERDUCK_TOKEN for dlt).
 """
+
 from __future__ import annotations
 
 import csv

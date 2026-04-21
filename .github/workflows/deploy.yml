@@ -6,9 +6,12 @@ on:
     paths:
       - 'streaming/**'
       - 'batch/**'
+      - 'kestra/**'
+      - 'dbt/**'
       - 'pyproject.toml'
       - 'uv.lock'
       - 'Dockerfile'
+      - 'Dockerfile.kestra'
       - 'deploy/**'
       - '.github/workflows/deploy.yml'
   workflow_dispatch:
@@ -25,13 +28,19 @@ jobs:
       fail-fast: false
       matrix:
         app:
-          - { name: producer,  config: deploy/producer/fly.toml }
-          - { name: detector, config: deploy/detector/fly.toml }
-          - { name: sink,     config: deploy/sink/fly.toml }
+          - { name: producer, config: deploy/producer/fly.toml, dockerfile: Dockerfile }
+          - { name: detector, config: deploy/detector/fly.toml, dockerfile: Dockerfile }
+          - { name: sink,     config: deploy/sink/fly.toml,     dockerfile: Dockerfile }
+          - { name: kestra,   config: deploy/kestra/fly.toml,   dockerfile: Dockerfile.kestra }
     steps:
       - uses: actions/checkout@v4
       - uses: superfly/flyctl-actions/setup-flyctl@master
       - name: Deploy ${{ matrix.app.name }}
-        run: flyctl deploy --config ${{ matrix.app.config }} --dockerfile Dockerfile --app phishing-radar-${{ matrix.app.name }} --ha=false
+        run: >
+          flyctl deploy
+          --config ${{ matrix.app.config }}
+          --dockerfile ${{ matrix.app.dockerfile }}
+          --app phishing-radar-${{ matrix.app.name }}
+          --ha=false
         env:
           FLY_ACCESS_TOKEN: ${{ secrets.FLY_ACCESS_TOKEN }}

@@ -6,6 +6,7 @@ right now. ~1600 entries as of April 2026.
 
 Docs: https://www.cisa.gov/known-exploited-vulnerabilities-catalog
 """
+
 from __future__ import annotations
 
 import logging

@@ -8,6 +8,7 @@ widget responds to the same slice of time, brand and CA.
 See docs/detection_alternatives.md for the rationale behind the detector's
 similarity rules.
 """
+
 from __future__ import annotations
 
 import os
@@ -34,6 +35,7 @@ st.set_page_config(
 # =============================================================================
 # DATA LAYER
 # =============================================================================
+
 
 @st.cache_resource
 def get_conn() -> duckdb.DuckDBPyConnection:
@@ -217,34 +219,16 @@ GLOSSARY = {
         "Certificate Transparency. An open, append-only log system that every "
         "public TLS certificate has to be written to."
     ),
-    "SAN": (
-        "Subject Alternative Name. The cert field that lists every hostname a "
-        "certificate is valid for."
-    ),
+    "SAN": ("Subject Alternative Name. The cert field that lists every hostname a certificate is valid for."),
     "CA": "Certificate Authority. The organisation that signs and issues TLS certificates.",
-    "CVE": (
-        "Common Vulnerabilities and Exposures. The global ID for a publicly "
-        "disclosed security flaw."
-    ),
-    "KEV": (
-        "Known Exploited Vulnerabilities. CISA's catalogue of CVEs with "
-        "evidence of active exploitation."
-    ),
+    "CVE": ("Common Vulnerabilities and Exposures. The global ID for a publicly disclosed security flaw."),
+    "KEV": ("Known Exploited Vulnerabilities. CISA's catalogue of CVEs with evidence of active exploitation."),
     "C2": "Command and Control. The server a malware implant calls home to for instructions.",
-    "CIDR": (
-        "Classless Inter-Domain Routing. The /24, /16 notation that describes "
-        "an IP range."
-    ),
-    "DROP": (
-        "Don't Route Or Peer. Spamhaus's list of IP ranges that transit "
-        "providers should drop entirely."
-    ),
+    "CIDR": ("Classless Inter-Domain Routing. The /24, /16 notation that describes an IP range."),
+    "DROP": ("Don't Route Or Peer. Spamhaus's list of IP ranges that transit providers should drop entirely."),
     "TLD": "Top-Level Domain. The rightmost label of a hostname (.com, .org, .co.uk).",
     "SLD": "Second-Level Domain. The label immediately to the left of the TLD.",
-    "typosquatting": (
-        "Registering a domain that is visually or phonetically close to a "
-        "legitimate one."
-    ),
+    "typosquatting": ("Registering a domain that is visually or phonetically close to a legitimate one."),
     "homoglyph": (
         "Two characters that look identical or near-identical to a human reader "
         "(0 vs o, 1 vs l, Cyrillic а vs Latin a)."
@@ -258,8 +242,7 @@ MALWARE_DESCRIPTIONS = {
     "trickbot": "Modular banking trojan turned ransomware loader (Ryuk, Conti). Disrupted 2020; fragments remain.",
     "icedid": "BokBot. Info stealer and loader, delivered through malicious Office docs and ZIPs.",
     "dridex": (
-        "Long-running banking trojan tied to Evil Corp. Macro-enabled Office "
-        "documents plus later-stage payloads."
+        "Long-running banking trojan tied to Evil Corp. Macro-enabled Office documents plus later-stage payloads."
     ),
     "cobalt strike": "Commercial adversary simulation toolkit. Cracked versions are ubiquitous in ransomware ops.",
     "cobaltstrike": "Commercial adversary simulation toolkit. Cracked versions are ubiquitous in ransomware ops.",
@@ -365,6 +348,7 @@ COUNTRY_META = {
 # refreshed daily) or a small slice of stg_suspicious_certs filtered by the
 # global filter bar.
 
+
 @st.cache_data(ttl=300)
 def q_kpis() -> dict[str, Any]:
     return run_query(f"select * from {MD_DATABASE}.mart_dashboard_kpis").iloc[0].to_dict()
@@ -413,19 +397,23 @@ def q_spamhaus_buckets() -> pd.DataFrame:
 # Filtered queries: accept date range + optional brand/issuer, read directly
 # from the staging table so filters are honest (no pre-agg loses rows).
 
+
 def q_suspicious_hourly(since: datetime, until: datetime, issuer: str | None) -> pd.DataFrame:
     clauses = ["seen_at_ts between ? and ?"]
     params: list[Any] = [since, until]
     if issuer and issuer != "(all)":
         clauses.append("issuer_cn = ?")
         params.append(issuer)
-    return run_query(f"""
+    return run_query(
+        f"""
         select date_trunc('hour', seen_at_ts) as hour, count(*) as flagged,
                date_trunc('hour', seen_at_ts) >= date_trunc('hour', now()) as is_partial_hour
         from {MD_DATABASE}.stg_suspicious_certs
-        where {' and '.join(clauses)}
+        where {" and ".join(clauses)}
         group by 1 order by 1
-    """, tuple(params))
+    """,
+        tuple(params),
+    )
 
 
 def q_top_brands(since: datetime, until: datetime, issuer: str | None) -> pd.DataFrame:
@@ -434,17 +422,20 @@ def q_top_brands(since: datetime, until: datetime, issuer: str | None) -> pd.Dat
     if issuer and issuer != "(all)":
         clauses.append("s.issuer_cn = ?")
         params.append(issuer)
-    return run_query(f"""
+    return run_query(
+        f"""
         select brand, count(*) as hits
         from (
           select s.seen_at_ts, json_extract_string(d.value, '$.brand') as brand
           from {MD_DATABASE}.stg_suspicious_certs s,
           lateral (select unnest(from_json(s.detections_raw::varchar, '["json"]')) as value) d
-          where {' and '.join(clauses)}
+          where {" and ".join(clauses)}
         )
         where brand is not null
         group by 1 order by hits desc limit 15
-    """, tuple(params))
+    """,
+        tuple(params),
+    )
 
 
 def q_recent_suspicious(since: datetime, until: datetime, brand: str | None, issuer: str | None) -> pd.DataFrame:
@@ -458,21 +449,27 @@ def q_recent_suspicious(since: datetime, until: datetime, brand: str | None, iss
         # to avoid a lateral unnest per row.
         clauses.append("detections_raw::varchar ilike ?")
         params.append(f'%"brand":"{brand}"%')
-    return run_query(f"""
+    return run_query(
+        f"""
         select seen_at_ts, primary_domain, issuer_cn, max_score
         from {MD_DATABASE}.stg_suspicious_certs
-        where {' and '.join(clauses)}
+        where {" and ".join(clauses)}
         order by seen_at_ts desc limit 50
-    """, tuple(params))
+    """,
+        tuple(params),
+    )
 
 
 def q_top_issuers(since: datetime, until: datetime) -> pd.DataFrame:
-    return run_query(f"""
+    return run_query(
+        f"""
         select coalesce(issuer_cn, '(unknown)') as issuer, count(*) as hits
         from {MD_DATABASE}.stg_suspicious_certs
         where seen_at_ts between ? and ?
         group by 1 order by hits desc limit 12
-    """, (since, until))
+    """,
+        (since, until),
+    )
 
 
 @st.cache_data(ttl=600)
@@ -504,12 +501,7 @@ st.markdown(
 
 
 def _kpi(klass: str, value: int, label: str) -> str:
-    return (
-        f"<div class='kpi {klass}'>"
-        f"<div class='value'>{value:,}</div>"
-        f"<div class='label'>{label}</div>"
-        "</div>"
-    )
+    return f"<div class='kpi {klass}'><div class='value'>{value:,}</div><div class='label'>{label}</div></div>"
 
 
 st.markdown(
@@ -585,6 +577,7 @@ tab_overview, tab_stream, tab_batch, tab_map, tab_about = st.tabs(
 # HELPERS
 # =============================================================================
 
+
 def render_c2_malware_chart(key_suffix: str, height: int = 360) -> None:
     """Horizontal bar of active C2s per malware family, with hover tooltip
     drawn from MALWARE_DESCRIPTIONS."""
@@ -594,12 +587,16 @@ def render_c2_malware_chart(key_suffix: str, height: int = 360) -> None:
         return
     c2_mal = c2_mal.head(14).copy()
     c2_mal["tooltip"] = c2_mal["malware_family"].map(malware_tooltip)
-    fig = go.Figure(go.Bar(
-        x=c2_mal["active_c2"], y=c2_mal["malware_family"], orientation="h",
-        marker=dict(color=c2_mal["active_c2"], colorscale=[[0, ACCENT_VIOLET], [1, ACCENT_CYAN]]),
-        customdata=c2_mal[["tooltip"]].values,
-        hovertemplate="<b>%{y}</b><br>%{x} active C2s<br><i>%{customdata[0]}</i><extra></extra>",
-    ))
+    fig = go.Figure(
+        go.Bar(
+            x=c2_mal["active_c2"],
+            y=c2_mal["malware_family"],
+            orientation="h",
+            marker=dict(color=c2_mal["active_c2"], colorscale=[[0, ACCENT_VIOLET], [1, ACCENT_CYAN]]),
+            customdata=c2_mal[["tooltip"]].values,
+            hovertemplate="<b>%{y}</b><br>%{x} active C2s<br><i>%{customdata[0]}</i><extra></extra>",
+        )
+    )
     fig.update_layout(height=height, **CHART)
     fig.update_yaxes(autorange="reversed")
     st.plotly_chart(fig, use_container_width=True, key=f"c2_malware_{key_suffix}")
@@ -613,21 +610,30 @@ def render_suspicious_hourly(key_suffix: str) -> None:
     complete = sus_time[~sus_time["is_partial_hour"]]
     partial = sus_time[sus_time["is_partial_hour"]]
     fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=complete["hour"], y=complete["flagged"], mode="lines+markers",
-        line=dict(color=ACCENT_CYAN, width=2),
-        marker=dict(size=5, color=ACCENT_CYAN),
-        fill="tozeroy", fillcolor="rgba(0,229,255,0.08)",
-        name="Hourly count",
-        hovertemplate="<b>%{x|%Y-%m-%d %H:00}</b><br>%{y} flagged<extra></extra>",
-    ))
+    fig.add_trace(
+        go.Scatter(
+            x=complete["hour"],
+            y=complete["flagged"],
+            mode="lines+markers",
+            line=dict(color=ACCENT_CYAN, width=2),
+            marker=dict(size=5, color=ACCENT_CYAN),
+            fill="tozeroy",
+            fillcolor="rgba(0,229,255,0.08)",
+            name="Hourly count",
+            hovertemplate="<b>%{x|%Y-%m-%d %H:00}</b><br>%{y} flagged<extra></extra>",
+        )
+    )
     if not partial.empty:
-        fig.add_trace(go.Scatter(
-            x=partial["hour"], y=partial["flagged"], mode="markers",
-            marker=dict(size=9, color=ACCENT_PINK, symbol="diamond-open"),
-            name="Current hour (partial)",
-            hovertemplate="<b>%{x|%Y-%m-%d %H:00}</b><br>%{y} flagged (still in progress)<extra></extra>",
-        ))
+        fig.add_trace(
+            go.Scatter(
+                x=partial["hour"],
+                y=partial["flagged"],
+                mode="markers",
+                marker=dict(size=9, color=ACCENT_PINK, symbol="diamond-open"),
+                name="Current hour (partial)",
+                hovertemplate="<b>%{x|%Y-%m-%d %H:00}</b><br>%{y} flagged (still in progress)<extra></extra>",
+            )
+        )
     fig.update_layout(height=300, **CHART)
     st.plotly_chart(fig, use_container_width=True, key=f"hourly_{key_suffix}")
 
@@ -637,11 +643,15 @@ def render_top_issuers(key_suffix: str) -> None:
     if issuers.empty:
         st.info("No data for this range.")
         return
-    fig = go.Figure(go.Bar(
-        x=issuers["hits"], y=issuers["issuer"], orientation="h",
-        marker_color=ACCENT_VIOLET,
-        hovertemplate="<b>%{y}</b><br>%{x} flagged certs<extra></extra>",
-    ))
+    fig = go.Figure(
+        go.Bar(
+            x=issuers["hits"],
+            y=issuers["issuer"],
+            orientation="h",
+            marker_color=ACCENT_VIOLET,
+            hovertemplate="<b>%{y}</b><br>%{x} flagged certs<extra></extra>",
+        )
+    )
     fig.update_layout(height=300, **CHART)
     fig.update_yaxes(autorange="reversed")
     st.plotly_chart(fig, use_container_width=True, key=f"issuers_{key_suffix}")
@@ -652,11 +662,15 @@ def render_top_brands(key_suffix: str) -> None:
     if brands.empty:
         st.info("No brand impersonations in this range.")
         return
-    fig = go.Figure(go.Bar(
-        x=brands["hits"], y=brands["brand"], orientation="h",
-        marker_color=ACCENT_PINK,
-        hovertemplate="<b>%{y}</b><br>%{x} flagged certs<extra></extra>",
-    ))
+    fig = go.Figure(
+        go.Bar(
+            x=brands["hits"],
+            y=brands["brand"],
+            orientation="h",
+            marker_color=ACCENT_PINK,
+            hovertemplate="<b>%{y}</b><br>%{x} flagged certs<extra></extra>",
+        )
+    )
     fig.update_layout(height=360, **CHART)
     fig.update_yaxes(autorange="reversed")
     st.plotly_chart(fig, use_container_width=True, key=f"brands_{key_suffix}")
@@ -668,13 +682,17 @@ def render_recent_table(key_suffix: str) -> None:
         st.info("No flagged certs in this slice.")
         return
     st.dataframe(
-        recent.rename(columns={
-            "seen_at_ts": "First seen",
-            "primary_domain": "Domain",
-            "issuer_cn": "Issuer",
-            "max_score": "Score",
-        }),
-        use_container_width=True, hide_index=True, height=420,
+        recent.rename(
+            columns={
+                "seen_at_ts": "First seen",
+                "primary_domain": "Domain",
+                "issuer_cn": "Issuer",
+                "max_score": "Score",
+            }
+        ),
+        use_container_width=True,
+        hide_index=True,
+        height=420,
     )
 
 
@@ -691,8 +709,8 @@ with tab_overview:
 <div class='card'>
   <h3>The streaming lane</h3>
   <p class='tagline'>A producer pulls every cert from CT logs, a Python detector scores each
-  domain against a short list of popular brands using {tip('homoglyph')} normalisation,
-  substring matching and {tip('typosquatting')} (Damerau-Levenshtein 1&ndash;2 plus
+  domain against a short list of popular brands using {tip("homoglyph")} normalisation,
+  substring matching and {tip("typosquatting")} (Damerau-Levenshtein 1&ndash;2 plus
   Jaro-Winkler), and writes the hits to MotherDuck.</p>
   <p class='tagline' style='margin-top:0.5rem;'>Top impersonated brands in the selected window:</p>
 </div>
@@ -710,8 +728,8 @@ with tab_overview:
             f"""
 <div class='card'>
   <h3>The batch lane</h3>
-  <p class='tagline'>Six threat-intel feeds (CISA {tip('KEV')}, abuse.ch Feodo Tracker,
-  abuse.ch ThreatFox, Spamhaus {tip('DROP')}, MITRE ATT&amp;CK, MaxMind GeoLite2) refresh
+  <p class='tagline'>Six threat-intel feeds (CISA {tip("KEV")}, abuse.ch Feodo Tracker,
+  abuse.ch ThreatFox, Spamhaus {tip("DROP")}, MITRE ATT&amp;CK, MaxMind GeoLite2) refresh
   daily via Kestra, land in MotherDuck through <span class='tag'>dlt</span>, and dbt
   materialises them into the marts this dashboard reads.</p>
   <p class='tagline' style='margin-top:0.5rem;'>Active C2 servers by malware family (hover for context):</p>
@@ -732,6 +750,7 @@ with tab_overview:
 # =============================================================================
 # TAB: LIVE PHISHING STREAM (fragment for optional auto-refresh)
 # =============================================================================
+
 
 @st.fragment(run_every=30 if False else None)  # placeholder; rebound below
 def _stream_panel_placeholder() -> None: ...
@@ -764,7 +783,7 @@ def stream_panel() -> None:
         st.markdown(
             f"""
 <div class='card'>
-  <h3>Top issuing {tip('CA', 'CAs')}</h3>
+  <h3>Top issuing {tip("CA", "CAs")}</h3>
   <p class='tagline'>Which certificate authorities signed the suspicious certs. A Let&rsquo;s
   Encrypt cert for a typosquatted domain is a different story than a paid DV from DigiCert.</p>
 </div>
@@ -816,7 +835,7 @@ with tab_batch:
             f"""
 <div class='card'>
   <h3>KEV monthly additions</h3>
-  <p class='tagline'>Every time a CVE lands in CISA&rsquo;s {tip('KEV')} catalogue, it
+  <p class='tagline'>Every time a CVE lands in CISA&rsquo;s {tip("KEV")} catalogue, it
   means there is evidence of active exploitation in the wild. The current
   month is rendered in a lighter shade because it is still in progress and
   inevitably undercounts.</p>
@@ -828,21 +847,19 @@ with tab_batch:
         if not kev_monthly.empty:
             # Plotly only accepts alpha via rgba(), not 8-digit hex, so we
             # render partial months translucent using the gold accent's rgb.
-            colors = [
-                "rgba(255,184,0,0.33)" if partial else ACCENT_GOLD
-                for partial in kev_monthly["is_partial_month"]
-            ]
-            fig = go.Figure(go.Bar(
-                x=kev_monthly["month"], y=kev_monthly["additions"],
-                marker_color=colors,
-                hovertemplate="<b>%{x|%B %Y}</b><br>%{y} CVEs added<extra></extra>",
-            ))
+            colors = ["rgba(255,184,0,0.33)" if partial else ACCENT_GOLD for partial in kev_monthly["is_partial_month"]]
+            fig = go.Figure(
+                go.Bar(
+                    x=kev_monthly["month"],
+                    y=kev_monthly["additions"],
+                    marker_color=colors,
+                    hovertemplate="<b>%{x|%B %Y}</b><br>%{y} CVEs added<extra></extra>",
+                )
+            )
             fig.update_layout(height=300, **CHART)
             st.plotly_chart(fig, use_container_width=True, key="batch_kev_month")
         st.markdown(
-            "<div class='source'>"
-            "mart_dashboard_kev_monthly &middot; current month flagged as partial."
-            "</div>",
+            "<div class='source'>mart_dashboard_kev_monthly &middot; current month flagged as partial.</div>",
             unsafe_allow_html=True,
         )
 
@@ -860,7 +877,10 @@ with tab_batch:
         spam = q_spamhaus_buckets()
         if not spam.empty:
             fig = px.bar(
-                spam, x="block_size_bucket", y="block_count", color="list",
+                spam,
+                x="block_size_bucket",
+                y="block_count",
+                color="list",
                 color_discrete_map={"drop": ACCENT_PINK, "edrop": ACCENT_GOLD},
                 barmode="group",
             )
@@ -888,24 +908,32 @@ with tab_batch:
         )
         kev_vendors = q_kev_vendors()
         if not kev_vendors.empty:
-            fig = go.Figure(go.Bar(
-                x=kev_vendors["cves"], y=kev_vendors["vendor"], orientation="h",
-                marker=dict(
-                    color=kev_vendors["ransomware_ratio_pct"],
-                    colorscale=[[0, ACCENT_VIOLET], [1, ACCENT_PINK]],
-                    cmin=0, cmax=max(20, kev_vendors["ransomware_ratio_pct"].max()),
-                    colorbar=dict(
-                        title=dict(text="% ransomware", font=dict(color=TEXT_MUTED, size=10)),
-                        tickfont=dict(color=TEXT_MUTED, size=9),
-                        thickness=10, len=0.7, outlinewidth=0, bgcolor="rgba(0,0,0,0)",
+            fig = go.Figure(
+                go.Bar(
+                    x=kev_vendors["cves"],
+                    y=kev_vendors["vendor"],
+                    orientation="h",
+                    marker=dict(
+                        color=kev_vendors["ransomware_ratio_pct"],
+                        colorscale=[[0, ACCENT_VIOLET], [1, ACCENT_PINK]],
+                        cmin=0,
+                        cmax=max(20, kev_vendors["ransomware_ratio_pct"].max()),
+                        colorbar=dict(
+                            title=dict(text="% ransomware", font=dict(color=TEXT_MUTED, size=10)),
+                            tickfont=dict(color=TEXT_MUTED, size=9),
+                            thickness=10,
+                            len=0.7,
+                            outlinewidth=0,
+                            bgcolor="rgba(0,0,0,0)",
+                        ),
                     ),
-                ),
-                customdata=kev_vendors[["ransomware_linked", "ransomware_ratio_pct"]].values,
-                hovertemplate=(
-                    "<b>%{y}</b><br>%{x} CVEs in KEV<br>"
-                    "%{customdata[0]} tied to ransomware (%{customdata[1]:.1f}%)<extra></extra>"
-                ),
-            ))
+                    customdata=kev_vendors[["ransomware_linked", "ransomware_ratio_pct"]].values,
+                    hovertemplate=(
+                        "<b>%{y}</b><br>%{x} CVEs in KEV<br>"
+                        "%{customdata[0]} tied to ransomware (%{customdata[1]:.1f}%)<extra></extra>"
+                    ),
+                )
+            )
             fig.update_layout(height=400, **CHART)
             fig.update_yaxes(autorange="reversed")
             st.plotly_chart(fig, use_container_width=True, key="batch_kev_vendors")
@@ -919,7 +947,7 @@ with tab_batch:
             f"""
 <div class='card'>
   <h3>Active C2s by hosting country</h3>
-  <p class='tagline'>Countries where the actual {tip('C2')} servers sit. Not the same as
+  <p class='tagline'>Countries where the actual {tip("C2")} servers sit. Not the same as
   attribution: hosting is fluid and most abuse lives in permissive transit networks.</p>
 </div>
 """,
@@ -929,17 +957,21 @@ with tab_batch:
         if not c2_country.empty:
             top = c2_country[c2_country["country"] != "(unknown)"].head(15)
             top["tooltip"] = top["top_family"].map(malware_tooltip)
-            fig = go.Figure(go.Bar(
-                x=top["active_c2"], y=top["country"], orientation="h",
-                marker_color=ACCENT_CYAN,
-                customdata=top[["top_family", "tooltip", "sources"]].values,
-                hovertemplate=(
-                    "<b>%{y}</b><br>%{x} active C2s<br>"
-                    "Top family: %{customdata[0]}<br>"
-                    "<i>%{customdata[1]}</i><br>"
-                    "Sources: %{customdata[2]}<extra></extra>"
-                ),
-            ))
+            fig = go.Figure(
+                go.Bar(
+                    x=top["active_c2"],
+                    y=top["country"],
+                    orientation="h",
+                    marker_color=ACCENT_CYAN,
+                    customdata=top[["top_family", "tooltip", "sources"]].values,
+                    hovertemplate=(
+                        "<b>%{y}</b><br>%{x} active C2s<br>"
+                        "Top family: %{customdata[0]}<br>"
+                        "<i>%{customdata[1]}</i><br>"
+                        "Sources: %{customdata[2]}<extra></extra>"
+                    ),
+                )
+            )
             fig.update_layout(height=400, **CHART)
             fig.update_yaxes(autorange="reversed")
             st.plotly_chart(fig, use_container_width=True, key="batch_c2_country")
@@ -961,7 +993,7 @@ with tab_map:
 <div class='card'>
   <h3>Where the C2 servers live</h3>
   <p class='tagline'>Every dot is a country currently hosting at least one
-  tracked {tip('C2')} server. Dot size scales with the number of active C2s,
+  tracked {tip("C2")} server. Dot size scales with the number of active C2s,
   colour with the dominant malware family. Hosting country is a noisy signal
   (hosting is cheap and fluid, attribution belongs to the operators not the
   servers) but it still paints a useful picture: attackers cluster where
@@ -985,39 +1017,48 @@ with tab_map:
         mappable["top_family_display"] = mappable["top_family"].fillna("(unknown)")
         mappable["tooltip"] = mappable["top_family"].map(malware_tooltip)
 
-        fig = go.Figure(go.Scattergeo(
-            lon=mappable["lon"],
-            lat=mappable["lat"],
-            text=mappable["country_name"],
-            customdata=mappable[["active_c2", "top_family_display", "tooltip", "sources"]].values,
-            marker=dict(
-                size=mappable["active_c2"],
-                sizemode="area",
-                sizeref=2.0 * mappable["active_c2"].max() / (60.0 ** 2),
-                sizemin=6,
-                color=mappable["active_c2"],
-                colorscale=[[0, ACCENT_VIOLET], [0.5, ACCENT_PINK], [1, ACCENT_GOLD]],
-                line=dict(color=ACCENT_CYAN, width=1),
-                opacity=0.85,
-                colorbar=dict(
-                    title=dict(text="Active C2s", font=dict(color=TEXT_MUTED, size=11)),
-                    tickfont=dict(color=TEXT_MUTED, size=10),
-                    thickness=12, len=0.7, outlinewidth=0, bgcolor="rgba(0,0,0,0)",
+        fig = go.Figure(
+            go.Scattergeo(
+                lon=mappable["lon"],
+                lat=mappable["lat"],
+                text=mappable["country_name"],
+                customdata=mappable[["active_c2", "top_family_display", "tooltip", "sources"]].values,
+                marker=dict(
+                    size=mappable["active_c2"],
+                    sizemode="area",
+                    sizeref=2.0 * mappable["active_c2"].max() / (60.0**2),
+                    sizemin=6,
+                    color=mappable["active_c2"],
+                    colorscale=[[0, ACCENT_VIOLET], [0.5, ACCENT_PINK], [1, ACCENT_GOLD]],
+                    line=dict(color=ACCENT_CYAN, width=1),
+                    opacity=0.85,
+                    colorbar=dict(
+                        title=dict(text="Active C2s", font=dict(color=TEXT_MUTED, size=11)),
+                        tickfont=dict(color=TEXT_MUTED, size=10),
+                        thickness=12,
+                        len=0.7,
+                        outlinewidth=0,
+                        bgcolor="rgba(0,0,0,0)",
+                    ),
                 ),
-            ),
-            hovertemplate=(
-                "<b>%{text}</b><br>%{customdata[0]} active C2s<br>"
-                "Top family: %{customdata[1]}<br><i>%{customdata[2]}</i><br>"
-                "Sources: %{customdata[3]}<extra></extra>"
-            ),
-        ))
+                hovertemplate=(
+                    "<b>%{text}</b><br>%{customdata[0]} active C2s<br>"
+                    "Top family: %{customdata[1]}<br><i>%{customdata[2]}</i><br>"
+                    "Sources: %{customdata[3]}<extra></extra>"
+                ),
+            )
+        )
         fig.update_geos(
             projection_type="natural earth",
             bgcolor=BG_CARD,
-            showcountries=True, countrycolor=BORDER,
-            showocean=True, oceancolor=BG,
-            showland=True, landcolor="#10102a",
-            showframe=False, showcoastlines=False,
+            showcountries=True,
+            countrycolor=BORDER,
+            showocean=True,
+            oceancolor=BG,
+            showland=True,
+            landcolor="#10102a",
+            showframe=False,
+            showcoastlines=False,
         )
         fig.update_layout(
             height=560,
@@ -1030,18 +1071,21 @@ with tab_map:
         col1, col2 = st.columns([1, 1])
         with col1:
             st.markdown(
-                "<div class='card'><h3>Top countries</h3>"
-                "<p class='tagline'>Raw numbers behind the map.</p></div>",
+                "<div class='card'><h3>Top countries</h3><p class='tagline'>Raw numbers behind the map.</p></div>",
                 unsafe_allow_html=True,
             )
             st.dataframe(
-                mappable.rename(columns={
-                    "country_name": "Country",
-                    "active_c2": "Active C2s",
-                    "top_family_display": "Top family",
-                    "sources": "Sources",
-                })[["Country", "Active C2s", "Top family", "Sources"]].head(20),
-                use_container_width=True, hide_index=True, height=380,
+                mappable.rename(
+                    columns={
+                        "country_name": "Country",
+                        "active_c2": "Active C2s",
+                        "top_family_display": "Top family",
+                        "sources": "Sources",
+                    }
+                )[["Country", "Active C2s", "Top family", "Sources"]].head(20),
+                use_container_width=True,
+                hide_index=True,
+                height=380,
             )
         with col2:
             if not unmapped.empty:
@@ -1052,13 +1096,14 @@ with tab_map:
                     "whose IP didn&rsquo;t match any GeoLite2 block.</p></div>",
                     unsafe_allow_html=True,
                 )
-                unmapped_view = (
-                    unmapped.rename(columns={"country": "Country", "active_c2": "Active C2s"})
-                    [["Country", "Active C2s"]]
-                )
+                unmapped_view = unmapped.rename(columns={"country": "Country", "active_c2": "Active C2s"})[
+                    ["Country", "Active C2s"]
+                ]
                 st.dataframe(
                     unmapped_view,
-                    use_container_width=True, hide_index=True, height=240,
+                    use_container_width=True,
+                    hide_index=True,
+                    height=240,
                 )
         st.markdown(
             "<div class='source'>"

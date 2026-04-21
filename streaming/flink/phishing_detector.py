@@ -13,6 +13,7 @@ external table over GCS) is responsible for persisting them to the warehouse.
 Run:
     uv run python -m streaming.flink.phishing_detector
 """
+
 from __future__ import annotations
 
 import json
@@ -57,13 +58,15 @@ def enrich_with_detection(raw_json: str) -> str | None:
     for dom in domains:
         det = detect(dom)
         if det:
-            hits.append({
-                "domain": dom,
-                "brand": det.brand,
-                "category": det.category,
-                "reason": det.reason,
-                "score": det.score,
-            })
+            hits.append(
+                {
+                    "domain": dom,
+                    "brand": det.brand,
+                    "category": det.category,
+                    "reason": det.reason,
+                    "score": det.score,
+                }
+            )
 
     if not hits:
         return None
@@ -124,10 +127,7 @@ def build_pipeline() -> StreamExecutionEnvironment:
     )
 
     # --- Branch 1: suspicious-cert sink ---
-    suspicious = (
-        raw.map(enrich_with_detection, output_type=Types.STRING())
-        .filter(lambda x: x is not None)
-    )
+    suspicious = raw.map(enrich_with_detection, output_type=Types.STRING()).filter(lambda x: x is not None)
 
     suspicious_sink = (
         KafkaSink.builder()
@@ -150,12 +150,14 @@ def build_pipeline() -> StreamExecutionEnvironment:
         .window(TumblingEventTimeWindows.of(Time.minutes(1)))
         .reduce(lambda a, b: (a[0], a[1] + b[1], a[2] + b[2]))
         .map(
-            lambda t: json.dumps({
-                "window_end": datetime.utcnow().isoformat(),
-                "issuer_cn": t[0],
-                "suspicious_count": t[1],
-                "total_count": t[2],
-            }),
+            lambda t: json.dumps(
+                {
+                    "window_end": datetime.utcnow().isoformat(),
+                    "issuer_cn": t[0],
+                    "suspicious_count": t[1],
+                    "total_count": t[2],
+                }
+            ),
             output_type=Types.STRING(),
         )
     )

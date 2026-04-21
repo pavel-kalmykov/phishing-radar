@@ -7,6 +7,7 @@ the CertStream message shape.
 
 Designed to be a long-running process. Auto-reconnects on websocket drops.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -72,7 +73,8 @@ def flatten_event(event: dict[str, Any]) -> dict[str, Any] | None:
         "issuer_c": issuer.get("C"),
         "san_count": (
             extensions.get("subjectAltName", "").count("DNS:")
-            if isinstance(extensions.get("subjectAltName"), str) else 0
+            if isinstance(extensions.get("subjectAltName"), str)
+            else 0
         ),
     }
 

@@ -17,6 +17,7 @@ no object storage is needed.
 Run:
     uv run python -m streaming.sink.kafka_to_md
 """
+
 from __future__ import annotations
 
 import json
@@ -138,11 +139,13 @@ def main() -> int:
                 log.warning("bad message on %s: %s", msg.topic(), e)
                 continue
 
-            buffers[table].append((
-                datetime.now(UTC).isoformat(),
-                msg.key().decode() if msg.key() else None,
-                payload_str,
-            ))
+            buffers[table].append(
+                (
+                    datetime.now(UTC).isoformat(),
+                    msg.key().decode() if msg.key() else None,
+                    payload_str,
+                )
+            )
 
             total_pending = sum(len(b) for b in buffers.values())
             if total_pending >= BATCH_SIZE or time.monotonic() - last_flush >= FLUSH_SECONDS:

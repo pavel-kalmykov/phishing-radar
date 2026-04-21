@@ -6,6 +6,7 @@ IP, port, first/last seen, and malware family.
 
 Docs: https://feodotracker.abuse.ch/blocklist/
 """
+
 from __future__ import annotations
 
 import logging
