@@ -25,6 +25,10 @@ sources:
         description: MaxMind GeoLite2 IPv4 country CIDR blocks
       - name: geoip_country_locations
         description: MaxMind GeoLite2 geoname_id to ISO country lookup
+      - name: geoip_city_blocks
+        description: MaxMind GeoLite2 IPv4 city CIDR blocks with latitude/longitude
+      - name: geoip_city_locations
+        description: MaxMind GeoLite2 geoname_id to city/region/country lookup
       - name: spamhaus_drop
         description: Spamhaus DROP and EDROP CIDR blocklists
         columns:

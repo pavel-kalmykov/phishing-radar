@@ -66,9 +66,14 @@ geolocated as (
         u.hostname,
         u.as_number,
         u.as_name,
-        coalesce(u.country, g.country_iso_code) as country,
-        g.country_name,
-        g.continent_code,
+        coalesce(u.country, city.country_iso_code, country.country_iso_code) as country,
+        coalesce(city.country_name, country.country_name) as country_name,
+        coalesce(city.continent_code, country.continent_code) as continent_code,
+        city.city_name,
+        city.region_name,
+        city.latitude,
+        city.longitude,
+        city.accuracy_radius,
         u.malware_family,
         u.first_seen,
         u.last_seen,
@@ -77,8 +82,10 @@ geolocated as (
         date_diff('day', u.first_seen, u.last_seen) as lifespan_days,
         date_diff('hour', u.last_seen, now()) as hours_since_seen
     from with_ip_int u
-    left join {{ ref('stg_geoip_country') }} g
-      on u.ip_int between g.start_int and g.end_int
+    left join {{ ref('stg_geoip_city') }} city
+      on u.ip_int between city.start_int and city.end_int
+    left join {{ ref('stg_geoip_country') }} country
+      on u.ip_int between country.start_int and country.end_int
 )
 
 -- Dedupe: if Feodo and ThreatFox both report the same IP, keep Feodo (curated).
@@ -92,6 +99,11 @@ select distinct on (ip_address)
     country,
     country_name,
     continent_code,
+    city_name,
+    region_name,
+    latitude,
+    longitude,
+    accuracy_radius,
     malware_family,
     first_seen,
     cast(first_seen as date) as first_seen_date,
