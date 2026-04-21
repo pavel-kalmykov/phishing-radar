@@ -4,10 +4,10 @@ app = "phishing-radar-kestra"
 primary_region = "cdg"
 
 [build]
-  image = "kestra/kestra:v0.19.12"
-
-[experimental]
-  cmd = ["server", "standalone"]
+  # Run `flyctl deploy --config deploy/kestra/fly.toml` from the repo root.
+  # The Dockerfile reference is resolved relative to the config file, so it
+  # points to ../../Dockerfile.kestra at the top of the repository.
+  dockerfile = "../../Dockerfile.kestra"
 
 [http_service]
   internal_port = 8080

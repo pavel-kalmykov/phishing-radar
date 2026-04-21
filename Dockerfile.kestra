@@ -1,0 +1,39 @@
+FROM kestra/kestra:v0.19.12
+
+USER root
+
+# Python 3 and uv for the batch tasks. Kestra's base is OpenJDK-21 on Debian
+# (no python). We grab the standalone uv binary instead of pip-installing it,
+# which sidesteps Debian's PEP 668 "externally managed" pip restriction.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends python3 python3-venv git curl ca-certificates \
+  && rm -rf /var/lib/apt/lists/* \
+  && curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
+
+WORKDIR /opt/phishing-radar
+
+# Install our Python dependencies once at build time so the batch flow can
+# just run `uv run python -m batch.*` without any install step.
+COPY pyproject.toml uv.lock ./
+RUN uv sync --no-dev --frozen && uv add --frozen dbt-core dbt-duckdb
+
+# Ship the batch + dbt code. Streaming code is irrelevant to Kestra.
+COPY batch ./batch
+COPY dbt ./dbt
+
+# Bake the Kestra flows into /app/flows so `micronaut.io.watch` picks them up
+# on boot. Flow YAML lives alongside the code in the repo.
+COPY kestra/flows /app/flows
+RUN chown -R kestra:kestra /app/flows
+
+ENV PATH="/opt/phishing-radar/.venv/bin:${PATH}"
+ENV PYTHONUNBUFFERED=1
+
+# Kestra's Process task runner executes commands as the `kestra` user, so the
+# venv and project dir must be readable by that user.
+RUN chown -R kestra:kestra /opt/phishing-radar
+
+USER kestra
+
+ENTRYPOINT ["docker-entrypoint.sh"]
+CMD ["server", "standalone"]
