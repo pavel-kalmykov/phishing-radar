@@ -2,13 +2,13 @@ FROM kestra/kestra:v0.19.12
 
 USER root
 
-# Python 3.11 and uv for the batch tasks, plus git in case a flow still wants
-# to clone something from outside. Kestra runs on OpenJDK-21 Debian; python
-# is not included in the base image.
+# Python 3 and uv for the batch tasks. Kestra's base is OpenJDK-21 on Debian
+# (no python). We grab the standalone uv binary instead of pip-installing it,
+# which sidesteps Debian's PEP 668 "externally managed" pip restriction.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends python3 python3-pip python3-venv git curl \
+  && apt-get install -y --no-install-recommends python3 python3-venv git curl ca-certificates \
   && rm -rf /var/lib/apt/lists/* \
-  && pip install --no-cache-dir --break-system-packages uv
+  && curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
 
 WORKDIR /opt/phishing-radar
 
@@ -28,6 +28,10 @@ RUN chown -R kestra:kestra /app/flows
 
 ENV PATH="/opt/phishing-radar/.venv/bin:${PATH}"
 ENV PYTHONUNBUFFERED=1
+
+# Kestra's Process task runner executes commands as the `kestra` user, so the
+# venv and project dir must be readable by that user.
+RUN chown -R kestra:kestra /opt/phishing-radar
 
 USER kestra
 

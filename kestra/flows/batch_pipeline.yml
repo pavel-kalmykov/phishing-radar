@@ -8,16 +8,7 @@ description: |
 
   The batch code and dependencies are baked into the Kestra Docker image at
   `/opt/phishing-radar`, so each run just invokes the pre-installed entry points
-  through the Process task runner — no cloning or pip installs per run.
-
-  Tweak the `cron` input to test different cadences (e.g. `"*/15 * * * *"`)
-  during development, then set it back to `"0 6 * * *"` for production.
-
-inputs:
-  - id: cron
-    type: STRING
-    defaults: "0 6 * * *"
-    description: Cron expression driving this flow.
+  through the Process task runner. No cloning or pip installs per run.
 
 variables:
   workdir: /opt/phishing-radar
@@ -56,4 +47,7 @@ tasks:
 triggers:
   - id: daily
     type: io.kestra.plugin.core.trigger.Schedule
-    cron: "{{ inputs.cron ?? '0 6 * * *' }}"
+    # Cron is static per Kestra's trigger validation. To test at a tighter
+    # cadence, edit this expression (e.g. "*/15 * * * *") and re-import the
+    # flow via `curl -X POST /api/v1/flows/phishing_radar/batch_pipeline`.
+    cron: "0 6 * * *"
