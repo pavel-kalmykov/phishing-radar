@@ -6,7 +6,7 @@ select
     as_number,
     as_name,
     country,
-    timestamp(first_seen) as first_seen,
-    timestamp(last_online) as last_online,
+    cast(first_seen as timestamp) as first_seen,
+    cast(last_online as timestamp) as last_online,
     malware as malware_family
 from {{ source('phishing_radar', 'feodo_c2') }}

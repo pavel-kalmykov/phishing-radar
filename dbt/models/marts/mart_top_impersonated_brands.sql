@@ -1,11 +1,10 @@
--- Ranking of the most-impersonated brands over the last 7 days.
--- Used for the "who's being targeted" panel on the dashboard.
-{{ config(materialized='table', cluster_by=['brand']) }}
+-- 7-day ranking of the most impersonated brands.
+{{ config(materialized='table') }}
 
 with recent as (
     select *
     from {{ ref('mart_suspicious_certs_daily') }}
-    where day >= date_sub(current_date(), interval 7 day)
+    where day >= current_date - interval 7 day
 )
 
 select

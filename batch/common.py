@@ -6,13 +6,16 @@ from typing import Any
 
 import dlt
 
-BQ_DATASET = os.getenv("BQ_DATASET", "phishing_radar")
+MD_DATABASE = os.getenv("MD_DATABASE", "main")
 
 
-def bigquery_pipeline(name: str) -> Any:
-    """Build a dlt pipeline that writes to BigQuery, dataset phishing_radar."""
+def md_pipeline(name: str) -> Any:
+    """Build a dlt pipeline that writes to MotherDuck, database `phishing_radar`.
+
+    dlt reads the MOTHERDUCK_TOKEN env var automatically for the motherduck destination.
+    """
     return dlt.pipeline(
         pipeline_name=name,
-        destination="bigquery",
-        dataset_name=BQ_DATASET,
+        destination="motherduck",
+        dataset_name=MD_DATABASE,
     )

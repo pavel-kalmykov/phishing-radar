@@ -1,19 +1,12 @@
--- Active botnet C2 IPs grouped by malware family. Drives the "who is talking to
--- whom" panel. Partitioned by first_seen so the dashboard can slice by week.
-{{
-    config(
-        materialized='table',
-        partition_by={'field': 'first_seen_date', 'data_type': 'date'},
-        cluster_by=['malware_family', 'country']
-    )
-}}
+-- Active botnet C2 IPs with age metrics.
+{{ config(materialized='table') }}
 
 with enriched as (
     select
         *,
-        date(first_seen) as first_seen_date,
-        timestamp_diff(current_timestamp(), last_online, hour) as hours_since_online,
-        timestamp_diff(last_online, first_seen, day) as lifespan_days
+        cast(first_seen as date) as first_seen_date,
+        date_diff('hour', last_online, now()) as hours_since_online,
+        date_diff('day', first_seen, last_online) as lifespan_days
     from {{ ref('stg_feodo') }}
 )
 

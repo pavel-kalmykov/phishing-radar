@@ -1,24 +1,15 @@
--- Per-minute suspicious-cert ratio per issuing CA. Driven by the Flink tumbling
--- window output. The dashboard uses it for the "who is signing the most
--- suspicious certs right now" heatmap.
-{{
-    config(
-        materialized='table',
-        partition_by={'field': 'window_date', 'data_type': 'date'},
-        cluster_by=['issuer_cn']
-    )
-}}
+-- Per-minute suspicious-cert ratio per issuing CA. Driven by the detector's
+-- tumbling-window output.
+{{ config(materialized='table') }}
 
-with with_ratio as (
-    select
-        window_end,
-        date(window_end) as window_date,
-        issuer_cn,
-        suspicious_count,
-        total_count,
-        safe_divide(suspicious_count, total_count) as suspicious_ratio
-    from {{ ref('stg_cert_stats') }}
-    where total_count > 0
-)
-
-select * from with_ratio
+select
+    window_end,
+    cast(window_end as date) as window_date,
+    issuer_cn,
+    suspicious_count,
+    total_count,
+    case when total_count = 0 then null
+         else suspicious_count * 1.0 / total_count
+    end as suspicious_ratio
+from {{ ref('stg_cert_stats') }}
+where total_count > 0

@@ -1,13 +1,5 @@
--- Join Feodo C2 entries with MITRE ATT&CK to give each malware family its
--- canonical ATT&CK ID and description. Fuzzy match on lowercased name so
--- "Heodo" -> "Emotet" and similar aliases resolve via MITRE's alias list upstream.
-{{
-    config(
-        materialized='table',
-        partition_by={'field': 'first_seen_date', 'data_type': 'date'},
-        cluster_by=['malware_family']
-    )
-}}
+-- Join Feodo C2 entries with MITRE ATT&CK software catalog on name.
+{{ config(materialized='table') }}
 
 select
     c.ip_address,

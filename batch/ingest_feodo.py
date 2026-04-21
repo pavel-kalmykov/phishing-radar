@@ -14,7 +14,7 @@ from typing import Iterator
 import dlt
 import requests
 
-from batch.common import bigquery_pipeline
+from batch.common import md_pipeline
 
 log = logging.getLogger("ingest-feodo")
 
@@ -45,7 +45,7 @@ def feodo_c2_resource() -> Iterator[dict]:
 
 def run() -> dict:
     logging.basicConfig(level=logging.INFO)
-    pipeline = bigquery_pipeline("ingest_feodo")
+    pipeline = md_pipeline("ingest_feodo")
     load_info = pipeline.run(feodo_c2_resource())
     log.info("loaded: %s", load_info)
     return load_info

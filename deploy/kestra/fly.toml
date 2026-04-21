@@ -1,0 +1,46 @@
+# Phishing Radar: Kestra orchestrator.
+# Schedules the daily batch flow (dlt ingestions + dbt run + dbt test).
+# Flow definitions live in the repo under /kestra/flows.
+app = "phishing-radar-kestra"
+primary_region = "cdg"
+
+[build]
+  image = "kestra/kestra:v0.19.12"
+
+[experimental]
+  cmd = ["server", "standalone"]
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+[[mounts]]
+  source = "kestra_data"
+  destination = "/app/storage"
+
+[env]
+  KESTRA_CONFIGURATION = """
+datasources:
+  postgres:
+    url: jdbc:h2:/app/storage/kestra
+kestra:
+  server:
+    basic-auth:
+      enabled: false
+  repository:
+    type: h2
+  storage:
+    type: local
+    local:
+      base-path: /app/storage
+  queue:
+    type: h2
+"""
+  JAVA_OPTS = "-Xms256m -Xmx640m -XX:+UseG1GC"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "768mb"
