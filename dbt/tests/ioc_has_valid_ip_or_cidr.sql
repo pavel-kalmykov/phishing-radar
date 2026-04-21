@@ -2,4 +2,4 @@
 -- Catches accidental schema shifts from upstream (abuse.ch API format drift).
 select ip_address
 from {{ ref('stg_feodo') }}
-where not regexp_contains(ip_address, r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$')
+where not regexp_matches(ip_address, '^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$')
