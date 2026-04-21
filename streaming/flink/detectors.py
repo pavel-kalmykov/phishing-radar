@@ -3,22 +3,28 @@
 Given a domain, decide if it looks like a phishing impersonation of a known brand.
 Four rules, from strongest to weakest:
 
-1. Homoglyph substitution (`paypa1.com`, `goog1e.com`): the second-level domain
-   equals a brand after we normalise digits that are visually similar to letters
-   (`1 -> l`, `0 -> o`, `5 -> s`, etc.). Score 3.
+1. Homoglyph substitution (`paypa1.com`, `goog1e.com`, `аpple.com`): the
+   second-level domain equals a brand after we normalise digits and Unicode
+   confusables (Cyrillic look-alikes) to their ASCII counterparts. Score 3.
 2. Brand appears as a substring of a hostname label other than the TLD
    (`login-paypal-secure.example.net`, `microsoft-support.org`). Score 2.
-3. Levenshtein distance 1..2 between the second-level domain and a brand, after
-   homoglyph normalisation (`paypa-l.com`, `amaz0n.com`). Score 3 - dist + 1.
+3. Damerau-Levenshtein distance 1..2 between the second-level domain and a
+   brand, after normalisation. Covers single-char edits plus transpositions
+   (`paypla`, `amzaon`). Score 3 - dist + 1.
+4. Jaro-Winkler similarity >= 0.92 on the normalised SLD. Weak signal,
+   favours prefix-preserving attacks (`paypal-support`, `amazon-eu`). Score 1.
 
 Returns the matched brand + reason, or None. Pure function: the Flink/Python
 detector job, dbt, and pytest all call it.
+
+See docs/detection_alternatives.md for the rationale behind this mix (and why
+MinHash, n-gram Jaccard and friends live elsewhere).
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from rapidfuzz.distance import Levenshtein
+from rapidfuzz.distance import DamerauLevenshtein, JaroWinkler
 
 from .brands import POPULAR_BRANDS
 
@@ -33,7 +39,16 @@ CANONICAL_DOMAINS: frozenset[str] = frozenset({
     "github.com", "github.io", "githubusercontent.com",
 })
 
-HOMOGLYPHS = str.maketrans({"0": "o", "1": "l", "5": "s", "3": "e", "4": "a"})
+# Digit-to-letter confusables plus Cyrillic look-alikes that commonly show up
+# in IDN phishing (`аpple.com`, `gооgle.com`, `раypal.com`).
+HOMOGLYPHS = str.maketrans({
+    "0": "o", "1": "l", "5": "s", "3": "e", "4": "a",
+    "а": "a", "е": "e", "о": "o", "р": "p", "с": "c",
+    "у": "y", "х": "x", "і": "i", "ѕ": "s", "ӏ": "l",
+})
+
+JARO_WINKLER_THRESHOLD = 0.92
+JW_MIN_LEN = 8
 
 
 @dataclass(frozen=True)
@@ -94,11 +109,19 @@ def detect(domain: str) -> Detection | None:
             if brand != lbl and brand in lbl:
                 return Detection(brand, category, "brand_as_label", score=2)
 
-        # Rule 3: fuzzy match on the SLD itself (handles single-letter typos like
-        # paypa-l, amzaon, etc.).
+        # Rule 3: Damerau-Levenshtein on the SLD. Catches single-char edits plus
+        # transpositions as one edit (paypla, amzaon), which plain Levenshtein
+        # would score as 2.
         if 3 <= len(sld_norm) <= 30:
-            dist = Levenshtein.distance(sld_norm, brand, score_cutoff=2)
+            dist = DamerauLevenshtein.distance(sld_norm, brand, score_cutoff=2)
             if 1 <= dist <= 2:
-                return Detection(brand, category, f"lev_{dist}", score=3 - dist + 1)
+                return Detection(brand, category, f"dlev_{dist}", score=3 - dist + 1)
+
+        # Rule 4: Jaro-Winkler rewards common prefixes, catching attacks that
+        # keep the brand as a prefix and append noise. Deliberately weak.
+        if len(sld_norm) >= JW_MIN_LEN:
+            sim = JaroWinkler.similarity(sld_norm, brand)
+            if sim >= JARO_WINKLER_THRESHOLD:
+                return Detection(brand, category, "jaro_winkler", score=1)
 
     return None
