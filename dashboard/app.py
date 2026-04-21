@@ -167,7 +167,7 @@ st.markdown(
    * hooks; overriding those gives us a pill look with no flicker bar
    * instead of the default Streamlit underline tabs. */
   .stTabs [data-baseweb="tab-list"] {{
-    gap: 0; background: {BG_CARD}; border: 1px solid {BORDER};
+    gap: 0.3rem; background: {BG_CARD}; border: 1px solid {BORDER};
     border-radius: 10px; padding: 0.35rem; margin-bottom: 1rem;
   }}
   .stTabs [data-baseweb="tab"] {{
@@ -176,8 +176,10 @@ st.markdown(
     font-size: 0.92rem;
   }}
   .stTabs [data-baseweb="tab"]:hover {{ background: rgba(0,229,255,0.06); color: {TEXT}; }}
-  .stTabs [aria-selected="true"] {{ background: {BG_RAISED} !important; color: {TEXT} !important;
-    box-shadow: 0 0 0 1px {ACCENT_VIOLET}44, 0 0 12px {ACCENT_VIOLET}22 inset; }}
+  .stTabs [aria-selected="true"] {{
+    background: {BG_RAISED} !important; color: {TEXT} !important;
+    box-shadow: 0 0 12px rgba(124,77,255,0.18) inset;
+  }}
   .stTabs [data-baseweb="tab-highlight"] {{ display: none; }}
   .stTabs [data-baseweb="tab-border"] {{ display: none; }}
 
