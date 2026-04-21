@@ -9,6 +9,7 @@ checkpointing, exactly-once delivery and native windowing. This one is the
 "demo friendly" sibling: identical business logic, easier to run locally, and
 what we point `make flink` at for quick iteration.
 """
+
 from __future__ import annotations
 
 import json
@@ -41,13 +42,15 @@ def enrich(event: dict) -> dict | None:
     for d in domains:
         det = detect(d)
         if det:
-            hits.append({
-                "domain": d,
-                "brand": det.brand,
-                "category": det.category,
-                "reason": det.reason,
-                "score": det.score,
-            })
+            hits.append(
+                {
+                    "domain": d,
+                    "brand": det.brand,
+                    "category": det.category,
+                    "reason": det.reason,
+                    "score": det.score,
+                }
+            )
     if not hits:
         return None
     return {
@@ -76,18 +79,22 @@ def _sasl_config() -> dict[str, str]:
 
 
 def main() -> int:
-    consumer = Consumer({
-        "bootstrap.servers": KAFKA_BOOTSTRAP,
-        "group.id": "phishing-radar-python-detector",
-        "auto.offset.reset": "earliest",
-        "enable.auto.commit": True,
-        **_sasl_config(),
-    })
-    producer = Producer({
-        "bootstrap.servers": KAFKA_BOOTSTRAP,
-        "compression.type": "zstd",
-        **_sasl_config(),
-    })
+    consumer = Consumer(
+        {
+            "bootstrap.servers": KAFKA_BOOTSTRAP,
+            "group.id": "phishing-radar-python-detector",
+            "auto.offset.reset": "earliest",
+            "enable.auto.commit": True,
+            **_sasl_config(),
+        }
+    )
+    producer = Producer(
+        {
+            "bootstrap.servers": KAFKA_BOOTSTRAP,
+            "compression.type": "zstd",
+            **_sasl_config(),
+        }
+    )
     consumer.subscribe([IN_TOPIC])
 
     # Tumbling window: (window_start_unix // WINDOW_SECONDS) -> { issuer_cn -> (sus, total) }
@@ -129,8 +136,12 @@ def main() -> int:
             msg = consumer.poll(1.0)
             flush_closed_windows()
             if time.time() - last_stats_log > 30:
-                log.info("emitted_suspicious=%d emitted_stats=%d open_windows=%d",
-                         emitted_suspicious, emitted_stats, len(windows))
+                log.info(
+                    "emitted_suspicious=%d emitted_stats=%d open_windows=%d",
+                    emitted_suspicious,
+                    emitted_stats,
+                    len(windows),
+                )
                 last_stats_log = time.time()
             if msg is None or msg.error():
                 continue
@@ -144,9 +155,11 @@ def main() -> int:
 
             enriched = enrich(event)
             if enriched:
-                producer.produce(OUT_SUSPICIOUS,
-                                 key=(enriched.get("primary_domain") or "").encode(),
-                                 value=json.dumps(enriched).encode())
+                producer.produce(
+                    OUT_SUSPICIOUS,
+                    key=(enriched.get("primary_domain") or "").encode(),
+                    value=json.dumps(enriched).encode(),
+                )
                 emitted_suspicious += 1
                 windows[bucket][issuer][0] += 1  # suspicious
             windows[bucket][issuer][1] += 1  # total

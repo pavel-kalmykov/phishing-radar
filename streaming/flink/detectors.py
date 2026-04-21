@@ -20,6 +20,7 @@ detector job, dbt, and pytest all call it.
 See docs/detection_alternatives.md for the rationale behind this mix (and why
 MinHash, n-gram Jaccard and friends live elsewhere).
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -29,23 +30,56 @@ from rapidfuzz.distance import DamerauLevenshtein, JaroWinkler
 from .brands import POPULAR_BRANDS
 
 # Canonical domains never flagged against themselves
-CANONICAL_DOMAINS: frozenset[str] = frozenset({
-    f"{b}.com" for b in POPULAR_BRANDS
-} | {
-    "microsoft.com", "live.com", "office.com", "outlook.com", "office365.com",
-    "paypal.com", "paypal.me", "google.com", "googlemail.com", "gmail.com",
-    "amazon.com", "amazon.co.uk", "amazon.de", "amazon.es", "amazon.fr",
-    "apple.com", "icloud.com", "facebook.com", "fb.com", "instagram.com",
-    "github.com", "github.io", "githubusercontent.com",
-})
+CANONICAL_DOMAINS: frozenset[str] = frozenset(
+    {f"{b}.com" for b in POPULAR_BRANDS}
+    | {
+        "microsoft.com",
+        "live.com",
+        "office.com",
+        "outlook.com",
+        "office365.com",
+        "paypal.com",
+        "paypal.me",
+        "google.com",
+        "googlemail.com",
+        "gmail.com",
+        "amazon.com",
+        "amazon.co.uk",
+        "amazon.de",
+        "amazon.es",
+        "amazon.fr",
+        "apple.com",
+        "icloud.com",
+        "facebook.com",
+        "fb.com",
+        "instagram.com",
+        "github.com",
+        "github.io",
+        "githubusercontent.com",
+    }
+)
 
 # Digit-to-letter confusables plus Cyrillic look-alikes that commonly show up
 # in IDN phishing (`аpple.com`, `gооgle.com`, `раypal.com`).
-HOMOGLYPHS = str.maketrans({
-    "0": "o", "1": "l", "5": "s", "3": "e", "4": "a",
-    "а": "a", "е": "e", "о": "o", "р": "p", "с": "c",
-    "у": "y", "х": "x", "і": "i", "ѕ": "s", "ӏ": "l",
-})
+HOMOGLYPHS = str.maketrans(
+    {
+        "0": "o",
+        "1": "l",
+        "5": "s",
+        "3": "e",
+        "4": "a",
+        "а": "a",
+        "е": "e",
+        "о": "o",
+        "р": "p",
+        "с": "c",
+        "у": "y",
+        "х": "x",
+        "і": "i",
+        "ѕ": "s",
+        "ӏ": "l",
+    }
+)
 
 JARO_WINKLER_THRESHOLD = 0.92
 JW_MIN_LEN = 8

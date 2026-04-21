@@ -10,6 +10,7 @@ so downstream marts can decide what to do.
 
 Docs: https://threatfox.abuse.ch/api/
 """
+
 from __future__ import annotations
 
 import logging

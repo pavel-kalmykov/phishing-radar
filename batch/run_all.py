@@ -2,6 +2,7 @@
 
 Entry point for `make batch` and for the daily Kestra/GitHub Actions flow.
 """
+
 from __future__ import annotations
 
 import logging
@@ -26,6 +27,7 @@ def main() -> int:
     # MaxMind requires a license key; skip gracefully if missing
     if os.getenv("MAXMIND_LICENSE_KEY"):
         from batch import ingest_maxmind
+
         pipelines.append(("maxmind", ingest_maxmind.run))
     else:
         log.warning("MAXMIND_LICENSE_KEY not set, skipping MaxMind ingestion")

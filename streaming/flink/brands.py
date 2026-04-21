@@ -4,6 +4,7 @@ Source: a distillation from anti-phishing reports (APWG, PhishLabs). Keep it sho
 and high-signal; we match on the second-level domain label so adding every
 possible brand is not necessary, and it keeps Levenshtein false positives low.
 """
+
 from __future__ import annotations
 
 # Mapping: canonical second-level label -> brand category
