@@ -29,10 +29,12 @@ BASE_URL = "https://download.maxmind.com/app/geoip_download"
 EDITIONS_CSV = {
     "asn": "GeoLite2-ASN-CSV",
     "country": "GeoLite2-Country-CSV",
+    "city": "GeoLite2-City-CSV",
 }
 EDITIONS_MMDB = {
     "asn": "GeoLite2-ASN",
     "country": "GeoLite2-Country",
+    "city": "GeoLite2-City",
 }
 
 
@@ -110,19 +112,58 @@ def country_locations() -> Iterator[dict]:
         }
 
 
+# GeoLite2-City is much larger than Country (~4M IPv4 blocks vs ~400k) but we
+# need it for per-IP lat/lon on the map. Country alone resolves only to the
+# ISO code, which is not enough for a scatter_geo dot.
+@dlt.resource(name="geoip_city_blocks", write_disposition="replace")
+def city_blocks() -> Iterator[dict]:
+    content = _download_zip(EDITIONS_CSV["city"])
+    for row in _iter_csv(content, "GeoLite2-City-Blocks-IPv4.csv"):
+        gn = row["geoname_id"]
+        lat = row.get("latitude")
+        lon = row.get("longitude")
+        yield {
+            "network": row["network"],
+            "geoname_id": int(gn) if gn else None,
+            "latitude": float(lat) if lat else None,
+            "longitude": float(lon) if lon else None,
+            "accuracy_radius": int(row["accuracy_radius"]) if row.get("accuracy_radius") else None,
+            "is_anonymous_proxy": row.get("is_anonymous_proxy") == "1",
+            "is_satellite_provider": row.get("is_satellite_provider") == "1",
+        }
+
+
+@dlt.resource(name="geoip_city_locations", write_disposition="replace")
+def city_locations() -> Iterator[dict]:
+    content = _download_zip(EDITIONS_CSV["city"])
+    for row in _iter_csv(content, "GeoLite2-City-Locations-en.csv"):
+        yield {
+            "geoname_id": int(row["geoname_id"]),
+            "continent_code": row["continent_code"],
+            "continent_name": row["continent_name"],
+            "country_iso_code": row["country_iso_code"],
+            "country_name": row["country_name"],
+            "subdivision_1_name": row.get("subdivision_1_name"),
+            "city_name": row.get("city_name"),
+            "time_zone": row.get("time_zone"),
+        }
+
+
 def run(mmdb_dir: str = "data/geoip") -> dict:
     logging.basicConfig(level=logging.INFO)
 
     # MMDB download requires a paid product tier; the free GeoLite2 account
     # only gets CSV. Skip gracefully if the MMDB 404s so the CSV load still runs.
-    for edition in ("asn", "country"):
+    for edition in ("asn", "country", "city"):
         try:
             _save_mmdb(edition, Path(mmdb_dir))
         except requests.exceptions.HTTPError as e:
             log.warning("MMDB download for %s unavailable (%s); using CSV only", edition, e)
 
     pipeline = md_pipeline("ingest_maxmind")
-    load_info = pipeline.run([asn_blocks(), country_blocks(), country_locations()])
+    load_info = pipeline.run(
+        [asn_blocks(), country_blocks(), country_locations(), city_blocks(), city_locations()]
+    )
     log.info("loaded: %s", load_info)
     return load_info
 
