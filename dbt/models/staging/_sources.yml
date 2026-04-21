@@ -19,6 +19,12 @@ sources:
           - name: ip_address
             tests:
               - not_null
+      - name: threatfox_iocs
+        description: abuse.ch ThreatFox IoCs (botnet_cc threat_type only)
+      - name: geoip_country_blocks
+        description: MaxMind GeoLite2 IPv4 country CIDR blocks
+      - name: geoip_country_locations
+        description: MaxMind GeoLite2 geoname_id to ISO country lookup
       - name: spamhaus_drop
         description: Spamhaus DROP and EDROP CIDR blocklists
         columns:

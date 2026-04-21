@@ -13,11 +13,18 @@ models:
           - accepted_values:
               values: ['last_week', 'last_month', 'last_quarter', 'last_year']
   - name: mart_c2_active
-    description: Currently-online Feodo Tracker C2 IPs with age metrics
+    description: >
+      Active botnet C2 IPs. Union of abuse.ch Feodo Tracker (curated, with
+      country) and ThreatFox (crowd-sourced, geolocated via MaxMind). Dedup
+      prefers Feodo when an IP appears in both.
     columns:
       - name: ip_address
         tests:
           - not_null
+      - name: source
+        tests:
+          - accepted_values:
+              values: ['feodo', 'threatfox']
       - name: status
         tests:
           - accepted_values:
@@ -38,3 +45,15 @@ models:
     description: 7-day ranking of most impersonated brands
   - name: mart_issuer_volume_1min
     description: Per-minute suspicious-cert ratio per issuing CA (from Flink windows)
+  - name: mart_dashboard_kpis
+    description: Single-row headline KPIs for the dashboard hero strip
+  - name: mart_dashboard_suspicious_hourly
+    description: Hourly volume of flagged certs with partial-hour flag
+  - name: mart_dashboard_top_issuers
+    description: Top 20 CAs that signed flagged certs, with counts
+  - name: mart_dashboard_kev_vendors
+    description: Top KEV vendors with explicit ransomware ratio percentage
+  - name: mart_dashboard_kev_monthly
+    description: Monthly KEV additions with partial-month flag
+  - name: mart_dashboard_c2_by_country
+    description: C2 counts per country across Feodo + ThreatFox sources
