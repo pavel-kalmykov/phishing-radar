@@ -1,0 +1,21 @@
+# Phishing Radar: Kafka -> MotherDuck sink.
+# Reads the three streaming topics from Redpanda Cloud and lands them into
+# `phishing_radar.main.raw_*` tables in MotherDuck.
+app = "phishing-radar-sink"
+primary_region = "cdg"
+
+[build]
+
+[env]
+  CERTSTREAM_TOPIC = "certstream_events"
+  SUSPICIOUS_TOPIC = "suspicious_certs"
+  STATS_TOPIC = "cert_stats_1min"
+  MD_CATALOG = "phishing_radar"
+  MD_DATABASE = "main"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"
+
+[processes]
+  app = "python -m streaming.sink.kafka_to_md"

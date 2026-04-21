@@ -1,18 +1,21 @@
-"""Kafka topics -> BigQuery streaming inserts.
+"""Kafka topics -> MotherDuck.
 
 Consumes the three streaming topics emitted by our pipeline and lands them
-to their corresponding raw tables in BigQuery:
+to their corresponding raw tables in the MotherDuck database:
 
 - `certstream_events`  -> `raw_certstream_events`
 - `suspicious_certs`   -> `raw_suspicious_certs`
 - `cert_stats_1min`    -> `raw_cert_stats_1min`
 
-Tables are created on first run with a liberal schema (one JSON payload column
-plus a received_at timestamp) so dbt owns the parsing. This keeps the sink
-cheap and schema-evolution friendly.
+Each raw table has three columns: `received_at`, `key`, `payload` (JSON).
+dbt owns the parsing, so the sink stays cheap and schema-evolution friendly.
+
+Uses DuckDB's `INSERT INTO ... VALUES (?, ?, ?::JSON)` via batched `executemany`.
+MotherDuck is reached through a DuckDB connection with the `md:` path prefix;
+no object storage is needed.
 
 Run:
-    uv run python -m streaming.sink.kafka_to_bq
+    uv run python -m streaming.sink.kafka_to_md
 """
 from __future__ import annotations
 
@@ -24,15 +27,20 @@ import sys
 import time
 from datetime import UTC, datetime
 
+import duckdb
 from confluent_kafka import Consumer
-from google.cloud import bigquery
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-log = logging.getLogger("kafka-to-bq")
+log = logging.getLogger("kafka-to-md")
 
 KAFKA_BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP", "localhost:9092")
-PROJECT = os.getenv("GCP_PROJECT_ID", "phishing-radar-putopavel")
-DATASET = os.getenv("BQ_DATASET", "phishing_radar")
+KAFKA_SASL_MECH = os.getenv("KAFKA_SASL_MECHANISM") or None
+KAFKA_SASL_USER = os.getenv("KAFKA_SASL_USERNAME") or None
+KAFKA_SASL_PASS = os.getenv("KAFKA_SASL_PASSWORD") or None
+
+MD_CATALOG = os.getenv("MD_CATALOG", "phishing_radar")
+MD_DATABASE = os.getenv("MD_DATABASE", "main")
+MOTHERDUCK_TOKEN = os.environ["MOTHERDUCK_TOKEN"]
 
 TOPIC_TO_TABLE = {
     os.getenv("CERTSTREAM_TOPIC", "certstream_events"): "raw_certstream_events",
@@ -44,43 +52,45 @@ BATCH_SIZE = int(os.getenv("SINK_BATCH_SIZE", "500"))
 FLUSH_SECONDS = float(os.getenv("SINK_FLUSH_SECONDS", "10"))
 
 
-def ensure_table(client: bigquery.Client, table_name: str) -> None:
-    """Create the raw table with (received_at, payload JSON) if missing."""
-    table_id = f"{PROJECT}.{DATASET}.{table_name}"
-    try:
-        client.get_table(table_id)
-        return
-    except Exception:
-        pass
+def _connect() -> duckdb.DuckDBPyConnection:
+    conn_str = f"md:{MD_CATALOG}?motherduck_token={MOTHERDUCK_TOKEN}"
+    return duckdb.connect(conn_str)
 
-    schema = [
-        bigquery.SchemaField("received_at", "TIMESTAMP", mode="REQUIRED"),
-        bigquery.SchemaField("key", "STRING", mode="NULLABLE"),
-        bigquery.SchemaField("payload", "JSON", mode="REQUIRED"),
-    ]
-    table = bigquery.Table(table_id, schema=schema)
-    table.time_partitioning = bigquery.TimePartitioning(
-        type_=bigquery.TimePartitioningType.DAY,
-        field="received_at",
-    )
-    client.create_table(table)
-    log.info("created %s", table_id)
+
+def _ensure_tables(conn: duckdb.DuckDBPyConnection) -> None:
+    for table in set(TOPIC_TO_TABLE.values()):
+        conn.execute(f"""
+            CREATE TABLE IF NOT EXISTS {table} (
+                received_at TIMESTAMP NOT NULL,
+                key VARCHAR,
+                payload JSON NOT NULL
+            )
+        """)
+
+
+def _build_consumer() -> Consumer:
+    config: dict[str, str] = {
+        "bootstrap.servers": KAFKA_BOOTSTRAP,
+        "group.id": "phishing-radar-md-sink",
+        "auto.offset.reset": "earliest",
+        "enable.auto.commit": "true",
+    }
+    if KAFKA_SASL_MECH:
+        config["security.protocol"] = "SASL_SSL"
+        config["sasl.mechanism"] = KAFKA_SASL_MECH
+        config["sasl.username"] = KAFKA_SASL_USER or ""
+        config["sasl.password"] = KAFKA_SASL_PASS or ""
+    return Consumer(config)
 
 
 def main() -> int:
-    bq_client = bigquery.Client(project=PROJECT)
-    for table in set(TOPIC_TO_TABLE.values()):
-        ensure_table(bq_client, table)
+    conn = _connect()
+    _ensure_tables(conn)
 
-    consumer = Consumer({
-        "bootstrap.servers": KAFKA_BOOTSTRAP,
-        "group.id": "phishing-radar-bq-sink",
-        "auto.offset.reset": "earliest",
-        "enable.auto.commit": True,
-    })
+    consumer = _build_consumer()
     consumer.subscribe(list(TOPIC_TO_TABLE))
 
-    buffers: dict[str, list[dict]] = {t: [] for t in set(TOPIC_TO_TABLE.values())}
+    buffers: dict[str, list[tuple[str, str | None, str]]] = {t: [] for t in set(TOPIC_TO_TABLE.values())}
     last_flush = time.monotonic()
     total_inserted = 0
     stop = False
@@ -97,12 +107,11 @@ def main() -> int:
         for table_name, rows in buffers.items():
             if not rows:
                 continue
-            table_id = f"{PROJECT}.{DATASET}.{table_name}"
-            errors = bq_client.insert_rows_json(table_id, rows)
-            if errors:
-                log.error("insert_rows_json errors for %s: %s", table_id, errors)
-            else:
-                total_inserted += len(rows)
+            conn.executemany(
+                f"INSERT INTO {table_name} (received_at, key, payload) VALUES (?, ?, ?::JSON)",
+                rows,
+            )
+            total_inserted += len(rows)
             rows.clear()
 
     try:
@@ -123,16 +132,17 @@ def main() -> int:
                 continue
 
             try:
-                payload = json.loads(msg.value().decode())
+                payload_str = msg.value().decode()
+                json.loads(payload_str)  # validate JSON
             except (json.JSONDecodeError, UnicodeDecodeError) as e:
                 log.warning("bad message on %s: %s", msg.topic(), e)
                 continue
 
-            buffers[table].append({
-                "received_at": datetime.now(UTC).isoformat(),
-                "key": msg.key().decode() if msg.key() else None,
-                "payload": json.dumps(payload),
-            })
+            buffers[table].append((
+                datetime.now(UTC).isoformat(),
+                msg.key().decode() if msg.key() else None,
+                payload_str,
+            ))
 
             total_pending = sum(len(b) for b in buffers.values())
             if total_pending >= BATCH_SIZE or time.monotonic() - last_flush >= FLUSH_SECONDS:
@@ -142,6 +152,7 @@ def main() -> int:
     finally:
         flush()
         consumer.close()
+        conn.close()
         log.info("shutdown; total_inserted=%d", total_inserted)
 
     return 0

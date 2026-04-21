@@ -14,7 +14,7 @@ from typing import Iterator
 import dlt
 import requests
 
-from batch.common import bigquery_pipeline
+from batch.common import md_pipeline
 
 log = logging.getLogger("ingest-mitre")
 
@@ -93,7 +93,7 @@ def mitre_attack_source() -> Iterator:
 
 def run() -> dict:
     logging.basicConfig(level=logging.INFO)
-    pipeline = bigquery_pipeline("ingest_mitre")
+    pipeline = md_pipeline("ingest_mitre")
     load_info = pipeline.run(mitre_attack_source())
     log.info("loaded: %s", load_info)
     return load_info

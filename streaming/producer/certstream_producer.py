@@ -85,13 +85,20 @@ def _ts_to_iso(ts: float | int | None) -> str | None:
 class CertStreamProducer:
     def __init__(self, bootstrap: str = KAFKA_BOOTSTRAP, topic: str = CERTSTREAM_TOPIC):
         self.topic = topic
-        self.producer = Producer({
+        config: dict[str, Any] = {
             "bootstrap.servers": bootstrap,
             "linger.ms": 50,
             "batch.size": 65536,
             "compression.type": "zstd",
             "acks": "all",
-        })
+        }
+        sasl_mech = os.getenv("KAFKA_SASL_MECHANISM")
+        if sasl_mech:
+            config["security.protocol"] = "SASL_SSL"
+            config["sasl.mechanism"] = sasl_mech
+            config["sasl.username"] = os.getenv("KAFKA_SASL_USERNAME", "")
+            config["sasl.password"] = os.getenv("KAFKA_SASL_PASSWORD", "")
+        self.producer = Producer(config)
         self._stop = asyncio.Event()
         self._sent = 0
         self._skipped = 0

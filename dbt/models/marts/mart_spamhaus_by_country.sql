@@ -1,9 +1,5 @@
--- Aggregates Spamhaus hijacked CIDRs by prefix length band. Used for the
--- "which subnet sizes are hijacked most" panel. Country mapping comes from
--- joining against MaxMind in the dashboard layer, not here.
-{{
-    config(materialized='table', cluster_by=['list'])
-}}
+-- Aggregates Spamhaus hijacked CIDRs by prefix-length band.
+{{ config(materialized='table') }}
 
 with blocks as (
     select

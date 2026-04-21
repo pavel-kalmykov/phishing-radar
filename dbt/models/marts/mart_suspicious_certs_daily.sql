@@ -1,30 +1,23 @@
--- Daily summary of impersonation certificates, ready for the dashboard.
--- Expands the `detections` array so each (cert, brand) combo is one row,
--- then buckets by day. Partitioned on `day` for cheap date filters.
-{{
-    config(
-        materialized='table',
-        partition_by={'field': 'day', 'data_type': 'date'},
-        cluster_by=['brand', 'category']
-    )
-}}
+-- Daily summary of impersonation certificates, one row per (day, brand, category, reason).
+-- `detections_raw` is a JSON array; DuckDB's json_each / unnest expand it.
+{{ config(materialized='table') }}
 
 with exploded as (
     select
         s.seen_at_ts,
-        date(s.seen_at_ts) as day,
+        cast(s.seen_at_ts as date) as day,
         s.primary_domain,
         s.issuer_cn,
         s.issuer_o,
         s.fingerprint,
         s.max_score,
-        json_value(det, '$.domain') as flagged_domain,
-        json_value(det, '$.brand') as brand,
-        json_value(det, '$.category') as category,
-        json_value(det, '$.reason') as reason,
-        cast(json_value(det, '$.score') as int64) as score
+        json_extract_string(det.value, '$.domain') as flagged_domain,
+        json_extract_string(det.value, '$.brand') as brand,
+        json_extract_string(det.value, '$.category') as category,
+        json_extract_string(det.value, '$.reason') as reason,
+        cast(json_extract_string(det.value, '$.score') as integer) as score
     from {{ ref('stg_suspicious_certs') }} s,
-    unnest(s.detections_raw) as det
+    lateral (select unnest(from_json(s.detections_raw::varchar, '["json"]')) as value) det
 )
 
 select

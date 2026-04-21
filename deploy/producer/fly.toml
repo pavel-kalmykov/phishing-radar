@@ -1,0 +1,18 @@
+# Phishing Radar: CertStream -> Redpanda producer.
+# Reads the CertStream firehose from a sister Fly app and writes events to the
+# `certstream_events` topic on Redpanda Cloud.
+app = "phishing-radar-producer"
+primary_region = "cdg"
+
+[build]
+
+[env]
+  CERTSTREAM_URL = "ws://phishing-radar-certstream.internal:8080/full-stream"
+  CERTSTREAM_TOPIC = "certstream_events"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"
+
+[processes]
+  app = "python -m streaming.producer.certstream_producer"

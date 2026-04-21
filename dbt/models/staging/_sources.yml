@@ -3,8 +3,8 @@ version: 2
 sources:
   - name: phishing_radar
     description: Raw tables loaded by dlt ingestion pipelines and the streaming sink
-    database: "{{ env_var('GCP_PROJECT_ID', 'phishing-radar-putopavel') }}"
-    schema: phishing_radar
+    database: "{{ env_var('MD_CATALOG', 'phishing_radar') }}"
+    schema: "{{ env_var('MD_DATABASE', 'main') }}"
     tables:
       - name: cisa_kev
         description: CISA Known Exploited Vulnerabilities catalog

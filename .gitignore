@@ -39,3 +39,5 @@ streaming/flink/savepoints/
 
 # MaxMind DB
 *.mmdb
+docs/.local/
+dbt/.user.yml

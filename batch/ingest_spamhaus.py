@@ -15,7 +15,7 @@ from typing import Iterator
 import dlt
 import requests
 
-from batch.common import bigquery_pipeline
+from batch.common import md_pipeline
 
 log = logging.getLogger("ingest-spamhaus")
 
@@ -50,7 +50,7 @@ def spamhaus_drop_resource() -> Iterator[dict]:
 
 def run() -> dict:
     logging.basicConfig(level=logging.INFO)
-    pipeline = bigquery_pipeline("ingest_spamhaus")
+    pipeline = md_pipeline("ingest_spamhaus")
     load_info = pipeline.run(spamhaus_drop_resource())
     log.info("loaded: %s", load_info)
     return load_info

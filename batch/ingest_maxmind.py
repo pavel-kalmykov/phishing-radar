@@ -1,10 +1,11 @@
-"""MaxMind GeoLite2 -> local MMDB + BigQuery country/ASN dim tables.
+"""MaxMind GeoLite2 -> MotherDuck country/ASN dim tables.
 
-Downloads the GeoLite2-ASN and GeoLite2-Country CSV zips, loads them as
-lookup tables in BigQuery. Keeps a copy of the MMDB file locally so the
-dashboard can do real-time IP -> geo lookups without a BQ join.
+Downloads the GeoLite2-ASN and GeoLite2-Country CSV zips and loads them as
+lookup tables in MotherDuck. If the paid MMDB editions are available on the
+account, also caches a local .mmdb for in-process IP lookups; otherwise
+falls back to CSV-only.
 
-Requires MAXMIND_ACCOUNT_ID and MAXMIND_LICENSE_KEY env vars.
+Requires MAXMIND_LICENSE_KEY env var (plus MOTHERDUCK_TOKEN for dlt).
 """
 from __future__ import annotations
 
@@ -19,7 +20,7 @@ from typing import Iterator
 import dlt
 import requests
 
-from batch.common import bigquery_pipeline
+from batch.common import md_pipeline
 
 log = logging.getLogger("ingest-maxmind")
 
@@ -108,11 +109,15 @@ def country_locations() -> Iterator[dict]:
 def run(mmdb_dir: str = "data/geoip") -> dict:
     logging.basicConfig(level=logging.INFO)
 
-    # Save MMDB files for the dashboard to use locally
+    # MMDB download requires a paid product tier; the free GeoLite2 account
+    # only gets CSV. Skip gracefully if the MMDB 404s so the CSV load still runs.
     for edition in ("asn", "country"):
-        _save_mmdb(edition, Path(mmdb_dir))
+        try:
+            _save_mmdb(edition, Path(mmdb_dir))
+        except requests.exceptions.HTTPError as e:
+            log.warning("MMDB download for %s unavailable (%s); using CSV only", edition, e)
 
-    pipeline = bigquery_pipeline("ingest_maxmind")
+    pipeline = md_pipeline("ingest_maxmind")
     load_info = pipeline.run([asn_blocks(), country_blocks(), country_locations()])
     log.info("loaded: %s", load_info)
     return load_info

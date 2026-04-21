@@ -14,7 +14,7 @@ from typing import Iterator
 import dlt
 import requests
 
-from batch.common import bigquery_pipeline
+from batch.common import md_pipeline
 
 log = logging.getLogger("ingest-cisa-kev")
 
@@ -51,7 +51,7 @@ def cisa_kev_resource() -> Iterator[dict]:
 
 def run() -> dict:
     logging.basicConfig(level=logging.INFO)
-    pipeline = bigquery_pipeline("ingest_cisa_kev")
+    pipeline = md_pipeline("ingest_cisa_kev")
     load_info = pipeline.run(cisa_kev_resource())
     log.info("loaded: %s", load_info)
     return load_info

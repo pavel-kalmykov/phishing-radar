@@ -1,0 +1,19 @@
+# Phishing Radar: typosquatting detector.
+# Consumes `certstream_events`, flags impersonation attempts, and produces to
+# `suspicious_certs` and `cert_stats_1min`.
+app = "phishing-radar-detector"
+primary_region = "cdg"
+
+[build]
+
+[env]
+  CERTSTREAM_TOPIC = "certstream_events"
+  SUSPICIOUS_TOPIC = "suspicious_certs"
+  STATS_TOPIC = "cert_stats_1min"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"
+
+[processes]
+  app = "python -m streaming.flink.python_detector"
