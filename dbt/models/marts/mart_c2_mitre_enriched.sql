@@ -7,10 +7,11 @@ select
     c.country,
     c.as_name,
     c.malware_family,
+    c.source,
     c.first_seen,
     c.first_seen_date,
-    c.last_online,
-    c.hours_since_online,
+    c.last_seen,
+    c.hours_since_seen,
     m.attack_id as mitre_attack_id,
     m.description as mitre_description
 from {{ ref('mart_c2_active') }} c

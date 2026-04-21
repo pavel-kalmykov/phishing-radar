@@ -27,6 +27,7 @@ tasks:
     commands:
       - cd {{ vars.workdir }} && uv run python -m batch.ingest_cisa_kev
       - cd {{ vars.workdir }} && uv run python -m batch.ingest_feodo
+      - cd {{ vars.workdir }} && uv run python -m batch.ingest_threatfox
       - cd {{ vars.workdir }} && uv run python -m batch.ingest_spamhaus
       - cd {{ vars.workdir }} && uv run python -m batch.ingest_mitre
       - cd {{ vars.workdir }} && uv run python -m batch.ingest_maxmind
