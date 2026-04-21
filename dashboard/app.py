@@ -11,6 +11,7 @@ similarity rules.
 
 from __future__ import annotations
 
+import hashlib
 import os
 from datetime import date, datetime, timedelta
 from typing import Any
@@ -111,11 +112,30 @@ st.markdown(
   .subtitle {{ color: {TEXT_MUTED}; font-size: 0.98rem; margin: 0 0 1.3rem 0; }}
   .intro {{ color: {TEXT_MUTED}; font-size: 0.98rem; margin: 0 0 1.6rem 0; line-height: 1.6; }}
 
-  .kpi-grid {{ display: grid; grid-template-columns: repeat(6, 1fr); gap: 0.75rem; margin: 0.6rem 0 1.2rem 0; }}
+  .kpi-grid {{
+    display: grid; gap: 0.75rem; margin: 0.6rem 0 1.2rem 0;
+    grid-template-columns: repeat(6, 1fr);
+  }}
+  /* Responsive KPI grid: 6 cols on desktop, 3 on tablet, 2 on phone. */
+  @media (max-width: 980px) {{
+    .kpi-grid {{ grid-template-columns: repeat(3, 1fr); }}
+  }}
+  @media (max-width: 560px) {{
+    .kpi-grid {{ grid-template-columns: repeat(2, 1fr); }}
+    .block-container {{ padding: 1rem !important; }}
+    .kpi .value {{ font-size: 1.35rem !important; }}
+    .footer {{ flex-direction: column; }}
+  }}
   .kpi {{
     background: {BG_CARD}; border: 1px solid {BORDER}; border-radius: 10px;
     padding: 0.95rem 1rem; position: relative; overflow: hidden;
+    cursor: help;
   }}
+  .kpi .label {{
+    border-bottom: 1px dashed {BORDER};
+    padding-bottom: 0.15rem; width: fit-content;
+  }}
+  .kpi:hover .label {{ border-bottom-color: {ACCENT_VIOLET}; color: {TEXT_MUTED}; }}
   .kpi::before {{
     content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px;
     background: var(--accent, {ACCENT_VIOLET});
@@ -140,6 +160,19 @@ st.markdown(
   }}
   .card h3 {{ font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.1em;
               color: {TEXT_DIM}; margin: 0 0 0.5rem 0; font-weight: 600; }}
+  .card h3 .badge {{
+    display: inline-block; font-size: 0.62rem; font-weight: 600;
+    padding: 0.1rem 0.45rem; border-radius: 10px; margin-left: 0.5rem;
+    letter-spacing: 0.08em; vertical-align: middle;
+  }}
+  .card h3 .badge.filtered {{
+    background: rgba(0,229,255,0.12); color: {ACCENT_CYAN};
+    border: 1px solid rgba(0,229,255,0.3);
+  }}
+  .card h3 .badge.static {{
+    background: rgba(155,153,201,0.08); color: {TEXT_DIM};
+    border: 1px solid {BORDER};
+  }}
   .card .tagline {{ color: {TEXT_MUTED}; font-size: 0.88rem; margin: 0 0 0.5rem 0; }}
 
   .source {{
@@ -193,6 +226,14 @@ st.markdown(
     background: {BG_RAISED} !important; border-color: {BORDER} !important;
     color: {TEXT} !important;
   }}
+
+  .footer {{
+    margin-top: 2rem; padding: 1rem 1.2rem;
+    background: {BG_CARD}; border: 1px solid {BORDER}; border-radius: 10px;
+    color: {TEXT_DIM}; font-size: 0.78rem; line-height: 1.6;
+    display: flex; justify-content: space-between; gap: 1rem; flex-wrap: wrap;
+  }}
+  .footer a {{ color: {ACCENT_CYAN}; }}
 </style>
 """,
     unsafe_allow_html=True,
@@ -228,10 +269,88 @@ GLOSSARY = {
     "DROP": ("Don't Route Or Peer. Spamhaus's list of IP ranges that transit providers should drop entirely."),
     "TLD": "Top-Level Domain. The rightmost label of a hostname (.com, .org, .co.uk).",
     "SLD": "Second-Level Domain. The label immediately to the left of the TLD.",
-    "typosquatting": ("Registering a domain that is visually or phonetically close to a legitimate one."),
+    "EDROP": (
+        "Extended DROP. Spamhaus's companion list for hijacked netblocks allocated to "
+        "legitimate RIRs but used by spam-friendly operators."
+    ),
+    "typosquatting": "Registering a domain that is visually or phonetically close to a legitimate one.",
     "homoglyph": (
         "Two characters that look identical or near-identical to a human reader "
         "(0 vs o, 1 vs l, Cyrillic а vs Latin a)."
+    ),
+    "Damerau-Levenshtein": (
+        "Edit distance that counts insertions, deletions, substitutions and transpositions. "
+        "Catches paypla vs paypal as 1 edit, which plain Levenshtein would score as 2."
+    ),
+    "Jaro-Winkler": (
+        "String similarity that rewards a shared prefix. Useful for attacks that keep the "
+        "brand at the start (paypal-login, amazon-eu)."
+    ),
+    "ATT&CK": (
+        "MITRE ATT&CK. Structured catalogue of adversary techniques, malware and intrusion "
+        "sets. Each entry has a stable ID (T1566, S0266, G0008...)."
+    ),
+    "dlt": (
+        "dlthub. Declarative Python library for writing small resumable ingestion pipelines straight into a warehouse."
+    ),
+    "Kestra": ("Open-source workflow orchestrator. YAML flows, easy to self-host."),
+    "Redpanda": ("Kafka-compatible streaming platform. Drop-in wire-protocol replacement for Kafka clients; no JVM."),
+    "MotherDuck": "Managed DuckDB service. Same SQL dialect as local DuckDB, storage on the cloud.",
+    "CertStream": (
+        "Public feed that fans out new entries from Certificate Transparency logs over a "
+        "WebSocket as they are published."
+    ),
+    "Fly.io": ("PaaS that runs Docker images as Firecracker microVMs. Host for the always-on Python services here."),
+    "Feodo": (
+        "abuse.ch Feodo Tracker. Curated list of active botnet C2 IPs (Emotet, QakBot, "
+        "Dridex, IcedID...), refreshed every few minutes."
+    ),
+    "ThreatFox": (
+        "abuse.ch crowd-sourced IoC feed. Covers ip:port, domain and URL IoCs tagged by "
+        "threat type (botnet_cc, payload_delivery...)."
+    ),
+    "phishing site": (
+        "A web page that mimics a legitimate brand to steal credentials, payment details or session tokens."
+    ),
+    "phishing kit": (
+        "A pre-built bundle (HTML/CSS/JS) that replicates a brand's login page. Attackers "
+        "unzip one into a compromised host to stand up a phishing site in minutes."
+    ),
+    "TLS certificate": (
+        "Cryptographic credential that tells a browser the site is who it claims to be and "
+        "encrypts the connection. Any public CA issuance is logged to CT."
+    ),
+    "malware": (
+        "Software written to harm: steal data, exfiltrate credentials, encrypt files for "
+        "ransom, hijack machines into botnets."
+    ),
+    "landing page": (
+        "The page a victim lands on after clicking the phishing link. Usually a clone of the real brand's login form."
+    ),
+    "append-only": (
+        "A data structure that accepts new entries but never rewrites or deletes old ones. "
+        "CT logs are Merkle-tree append-only; auditors can cryptographically prove no cert "
+        "was removed or backdated."
+    ),
+    "threat-intel": (
+        "Threat intelligence. Curated data about attacker infrastructure and activity (bad "
+        "IPs, hashes, techniques), published so defenders can block early."
+    ),
+    "CISA": ("Cybersecurity and Infrastructure Security Agency. US federal agency; publishes the KEV catalogue."),
+    "abuse.ch": (
+        "Swiss non-profit that runs Feodo Tracker, ThreatFox, URLhaus and MalwareBazaar. "
+        "Community-maintained threat-intel feeds, freely downloadable."
+    ),
+    "Spamhaus": (
+        "UK/CH anti-spam outfit that maintains DROP, EDROP and the SBL/XBL block-lists used across the industry."
+    ),
+    "MITRE": ("MITRE Corporation. Runs ATT&CK and maintains the CVE program."),
+    "MaxMind": (
+        "Company behind the GeoIP / GeoLite2 databases. GeoLite2 is a free CSV/MMDB set "
+        "that maps IPv4/IPv6 ranges to ASN, country and city."
+    ),
+    "AS": (
+        "Autonomous System. A block of IPs administered by a single organisation and routed as a unit on the Internet."
     ),
 }
 
@@ -270,6 +389,16 @@ MALWARE_DESCRIPTIONS = {
 }
 
 
+# Badges for card headers: "FILTERED" means the widget responds to the global
+# filter bar; "SNAPSHOT" means it reads from a pre-aggregated daily mart.
+BADGE_FILTERED = (
+    "<span class='badge filtered' title='Responds to the filter bar (date range, brand, CA).'>FILTERED</span>"
+)
+BADGE_STATIC = (
+    "<span class='badge static' title='Batch mart refreshed daily. Not driven by the filter bar.'>SNAPSHOT</span>"
+)
+
+
 def tip(term: str, label: str | None = None) -> str:
     desc = GLOSSARY.get(term, "")
     text = label or term
@@ -288,58 +417,6 @@ def malware_tooltip(family: str | None) -> str:
     return desc.replace("&", "&amp;").replace("<", "&lt;")
 
 
-# ISO-2 to ISO-3 and country centroid. Used to render the C2 map: per country
-# we plot one dot sized by the count, placed at the country centroid so the
-# geography reads even with <200 IPs. Only the countries we actually see.
-COUNTRY_META = {
-    "AE": ("ARE", "United Arab Emirates", 23.4, 53.8),
-    "AR": ("ARG", "Argentina", -38.4, -63.6),
-    "AT": ("AUT", "Austria", 47.5, 14.5),
-    "AU": ("AUS", "Australia", -25.0, 133.0),
-    "BR": ("BRA", "Brazil", -14.2, -51.9),
-    "CA": ("CAN", "Canada", 56.1, -106.3),
-    "CH": ("CHE", "Switzerland", 46.8, 8.2),
-    "CN": ("CHN", "China", 35.9, 104.2),
-    "CZ": ("CZE", "Czechia", 49.8, 15.5),
-    "DE": ("DEU", "Germany", 51.2, 10.4),
-    "DK": ("DNK", "Denmark", 56.3, 9.5),
-    "ES": ("ESP", "Spain", 40.5, -3.7),
-    "FI": ("FIN", "Finland", 61.9, 25.7),
-    "FR": ("FRA", "France", 46.2, 2.2),
-    "GB": ("GBR", "United Kingdom", 55.4, -3.4),
-    "HK": ("HKG", "Hong Kong", 22.3, 114.2),
-    "ID": ("IDN", "Indonesia", -0.8, 113.9),
-    "IE": ("IRL", "Ireland", 53.4, -8.2),
-    "IL": ("ISR", "Israel", 31.0, 34.9),
-    "IN": ("IND", "India", 20.6, 78.9),
-    "IT": ("ITA", "Italy", 41.9, 12.6),
-    "JP": ("JPN", "Japan", 36.2, 138.3),
-    "KR": ("KOR", "South Korea", 35.9, 127.8),
-    "LU": ("LUX", "Luxembourg", 49.8, 6.1),
-    "MX": ("MEX", "Mexico", 23.6, -102.5),
-    "NL": ("NLD", "Netherlands", 52.1, 5.3),
-    "NO": ("NOR", "Norway", 60.5, 8.5),
-    "NZ": ("NZL", "New Zealand", -40.9, 174.9),
-    "PA": ("PAN", "Panama", 8.5, -80.8),
-    "PH": ("PHL", "Philippines", 12.9, 121.8),
-    "PL": ("POL", "Poland", 51.9, 19.1),
-    "PT": ("PRT", "Portugal", 39.4, -8.2),
-    "RO": ("ROU", "Romania", 45.9, 24.9),
-    "RU": ("RUS", "Russia", 61.5, 105.3),
-    "SA": ("SAU", "Saudi Arabia", 23.9, 45.1),
-    "SC": ("SYC", "Seychelles", -4.7, 55.5),
-    "SE": ("SWE", "Sweden", 60.1, 18.6),
-    "SG": ("SGP", "Singapore", 1.4, 103.8),
-    "TH": ("THA", "Thailand", 15.9, 100.9),
-    "TR": ("TUR", "Turkey", 38.9, 35.2),
-    "TW": ("TWN", "Taiwan", 23.7, 121.0),
-    "UA": ("UKR", "Ukraine", 48.4, 31.2),
-    "US": ("USA", "United States", 37.1, -95.7),
-    "VN": ("VNM", "Vietnam", 14.1, 108.3),
-    "ZA": ("ZAF", "South Africa", -30.6, 22.9),
-}
-
-
 # =============================================================================
 # QUERIES
 # =============================================================================
@@ -356,14 +433,25 @@ def q_kpis() -> dict[str, Any]:
 
 @st.cache_data(ttl=300)
 def q_c2_by_country() -> pd.DataFrame:
-    return run_query(f"select * from {MD_DATABASE}.mart_dashboard_c2_by_country")
+    # Join back to mart_c2_active so we surface the full country name in the
+    # legend rather than the 2-letter ISO code the aggregate mart keeps.
+    return run_query(f"""
+        select b.country,
+               coalesce(max(a.country_name), b.country) as country_name,
+               b.active_c2, b.distinct_families, b.top_family, b.sources
+        from {MD_DATABASE}.mart_dashboard_c2_by_country b
+        left join {MD_DATABASE}.mart_c2_active a on a.country = b.country
+        group by b.country, b.active_c2, b.distinct_families, b.top_family, b.sources
+        order by b.active_c2 desc
+    """)
 
 
 @st.cache_data(ttl=300)
 def q_c2_active_rows() -> pd.DataFrame:
     return run_query(f"""
-        select ip_address, port, malware_family, country, as_name, source,
-               first_seen, last_seen
+        select ip_address, port, malware_family, country, country_name,
+               city_name, latitude, longitude, accuracy_radius,
+               as_name, source, first_seen, last_seen
         from {MD_DATABASE}.mart_c2_active
         order by last_seen desc nulls last
     """)
@@ -493,25 +581,66 @@ kpis = q_kpis()
 
 st.markdown("<h1>Phishing Radar</h1>", unsafe_allow_html=True)
 st.markdown(
-    f"<p class='subtitle'>Every phishing site needs a TLS certificate. We tail the "
-    f"{tip('CT', 'Certificate Transparency')} firehose, flag impersonations, and cross-reference "
-    f"against live malware infrastructure.</p>",
+    "<p class='subtitle'>Every "
+    + tip("phishing site", "phishing site")
+    + " needs a "
+    + tip("TLS certificate", "TLS certificate")
+    + ". We tail the "
+    + tip("CT", "Certificate Transparency")
+    + " firehose, flag impersonations, and cross-reference against live "
+    + tip("malware", "malware")
+    + " infrastructure.</p>",
     unsafe_allow_html=True,
 )
 
 
-def _kpi(klass: str, value: int, label: str) -> str:
-    return f"<div class='kpi {klass}'><div class='value'>{value:,}</div><div class='label'>{label}</div></div>"
+def _kpi(klass: str, value: int, label: str, tooltip: str) -> str:
+    return (
+        f"<div class='kpi {klass}' title='{tooltip}'>"
+        f"<div class='value'>{value:,}</div>"
+        f"<div class='label'>{label}</div>"
+        "</div>"
+    )
 
 
 st.markdown(
     "<div class='kpi-grid'>"
-    + _kpi("pink", int(kpis["kev_total"]), "CVEs actively exploited")
-    + _kpi("gold", int(kpis["kev_ransomware"]), "Used by ransomware")
-    + _kpi("cyan", int(kpis["c2_total"]), "Online botnet C2s")
-    + _kpi("violet", int(kpis["c2_countries"]), "Countries hosting C2s")
-    + _kpi("green", int(kpis["malware_total"]), "Malware in MITRE")
-    + _kpi("pink", int(kpis["suspicious_total"]), "Phishing certs seen")
+    + _kpi(
+        "pink",
+        int(kpis["kev_total"]),
+        "CVEs actively exploited",
+        "CVEs added to CISA's Known Exploited Vulnerabilities catalogue in the last 365 days.",
+    )
+    + _kpi(
+        "gold",
+        int(kpis["kev_ransomware"]),
+        "Used by ransomware",
+        "Subset of KEV flagged by CISA as tied to known ransomware campaigns.",
+    )
+    + _kpi(
+        "cyan",
+        int(kpis["c2_total"]),
+        "Online botnet C2s",
+        "Active Command-and-Control IPs from abuse.ch Feodo Tracker + ThreatFox (botnet_cc IoCs).",
+    )
+    + _kpi(
+        "violet",
+        int(kpis["c2_countries"]),
+        "Countries hosting C2s",
+        "Distinct hosting countries across the C2 IPs, derived from MaxMind GeoLite2-Country.",
+    )
+    + _kpi(
+        "green",
+        int(kpis["malware_total"]),
+        "Malware in MITRE",
+        "Software entries in the MITRE ATT&CK catalogue (malware + tools).",
+    )
+    + _kpi(
+        "pink",
+        int(kpis["suspicious_total"]),
+        "Phishing certs seen",
+        "Total TLS certs flagged as likely impersonations since the CertStream producer came up.",
+    )
     + "</div>",
     unsafe_allow_html=True,
 )
@@ -519,14 +648,21 @@ st.markdown(
 
 st.markdown(
     "<p class='intro'>"
-    "A modern phishing kit needs three things: a look-alike domain, a TLS cert so "
-    "browsers don&rsquo;t panic, and somewhere to host the landing page. The domain and "
-    "the cert are the two things we can see before the first email ever leaves. "
-    "Public CT logs make it inevitable: every certificate issued has to be written to "
-    "an append-only, cryptographically verifiable log. This report tails that firehose "
-    "in real time and lines the findings up against what the rest of the criminal "
-    "ecosystem is doing today."
-    "</p>",
+    + "A modern "
+    + tip("phishing kit", "phishing kit")
+    + " needs three things: a look-alike domain, a "
+    + tip("TLS certificate", "TLS cert")
+    + " so browsers don&rsquo;t panic, and somewhere to host the "
+    + tip("landing page", "landing page")
+    + ". The domain and the cert are the two things we can see before the first email "
+    + "ever leaves. Public "
+    + tip("CT", "CT")
+    + " logs make it inevitable: every certificate issued has to be written to an "
+    + tip("append-only", "append-only")
+    + ", cryptographically verifiable log. This report tails that firehose in real time "
+    + "and lines the findings up against what the rest of the criminal ecosystem is "
+    + "doing today."
+    + "</p>",
     unsafe_allow_html=True,
 )
 
@@ -592,12 +728,13 @@ def render_c2_malware_chart(key_suffix: str, height: int = 360) -> None:
             x=c2_mal["active_c2"],
             y=c2_mal["malware_family"],
             orientation="h",
-            marker=dict(color=c2_mal["active_c2"], colorscale=[[0, ACCENT_VIOLET], [1, ACCENT_CYAN]]),
+            marker_color=ACCENT_CYAN,
             customdata=c2_mal[["tooltip"]].values,
             hovertemplate="<b>%{y}</b><br>%{x} active C2s<br><i>%{customdata[0]}</i><extra></extra>",
         )
     )
     fig.update_layout(height=height, **CHART)
+    fig.update_xaxes(title_text="Active C2s")
     fig.update_yaxes(autorange="reversed")
     st.plotly_chart(fig, use_container_width=True, key=f"c2_malware_{key_suffix}")
 
@@ -672,6 +809,7 @@ def render_top_brands(key_suffix: str) -> None:
         )
     )
     fig.update_layout(height=360, **CHART)
+    fig.update_xaxes(title_text="Flagged certs")
     fig.update_yaxes(autorange="reversed")
     st.plotly_chart(fig, use_container_width=True, key=f"brands_{key_suffix}")
 
@@ -707,11 +845,12 @@ with tab_overview:
         st.markdown(
             f"""
 <div class='card'>
-  <h3>The streaming lane</h3>
-  <p class='tagline'>A producer pulls every cert from CT logs, a Python detector scores each
-  domain against a short list of popular brands using {tip("homoglyph")} normalisation,
-  substring matching and {tip("typosquatting")} (Damerau-Levenshtein 1&ndash;2 plus
-  Jaro-Winkler), and writes the hits to MotherDuck.</p>
+  <h3>The streaming lane {BADGE_FILTERED}</h3>
+  <p class='tagline'>A producer pulls every cert from {tip("CT", "CT")} logs via
+  {tip("CertStream")}, a Python detector scores each domain against a short list of popular
+  brands using {tip("homoglyph")} normalisation, substring matching and
+  {tip("typosquatting")} ({tip("Damerau-Levenshtein")} 1 or 2 plus {tip("Jaro-Winkler")}),
+  and writes the hits to {tip("MotherDuck")}.</p>
   <p class='tagline' style='margin-top:0.5rem;'>Top impersonated brands in the selected window:</p>
 </div>
 """,
@@ -727,12 +866,16 @@ with tab_overview:
         st.markdown(
             f"""
 <div class='card'>
-  <h3>The batch lane</h3>
-  <p class='tagline'>Six threat-intel feeds (CISA {tip("KEV")}, abuse.ch Feodo Tracker,
-  abuse.ch ThreatFox, Spamhaus {tip("DROP")}, MITRE ATT&amp;CK, MaxMind GeoLite2) refresh
-  daily via Kestra, land in MotherDuck through <span class='tag'>dlt</span>, and dbt
-  materialises them into the marts this dashboard reads.</p>
-  <p class='tagline' style='margin-top:0.5rem;'>Active C2 servers by malware family (hover for context):</p>
+  <h3>The batch lane {BADGE_STATIC}</h3>
+  <p class='tagline'>Six {tip("threat-intel", "threat-intel")} feeds
+  ({tip("CISA", "CISA")} {tip("KEV")}, {tip("abuse.ch", "abuse.ch")} {tip("Feodo")},
+  {tip("abuse.ch", "abuse.ch")} {tip("ThreatFox")}, {tip("Spamhaus", "Spamhaus")}
+  {tip("DROP")} and {tip("EDROP")}, {tip("ATT&amp;CK", "MITRE ATT&amp;CK")},
+  {tip("MaxMind", "MaxMind")} GeoLite2) refresh daily via {tip("Kestra")}, land in
+  {tip("MotherDuck")} through {tip("dlt")}, and dbt materialises them into the marts this
+  dashboard reads.</p>
+  <p class='tagline' style='margin-top:0.5rem;'>Active {tip("C2", "C2")} servers by
+  malware family (hover for context):</p>
 </div>
 """,
             unsafe_allow_html=True,
@@ -761,9 +904,9 @@ def stream_panel() -> None:
 
     with col1:
         st.markdown(
-            """
+            f"""
 <div class='card'>
-  <h3>Suspicious certs over time</h3>
+  <h3>Suspicious certs over time {BADGE_FILTERED}</h3>
   <p class='tagline'>Hourly count of flagged certificates. Pink diamonds mark the
   current hour, which is still in progress and should not be compared against
   complete hours.</p>
@@ -783,7 +926,7 @@ def stream_panel() -> None:
         st.markdown(
             f"""
 <div class='card'>
-  <h3>Top issuing {tip("CA", "CAs")}</h3>
+  <h3>Top issuing {tip("CA", "CAs")} {BADGE_FILTERED}</h3>
   <p class='tagline'>Which certificate authorities signed the suspicious certs. A Let&rsquo;s
   Encrypt cert for a typosquatted domain is a different story than a paid DV from DigiCert.</p>
 </div>
@@ -797,9 +940,9 @@ def stream_panel() -> None:
         )
 
     st.markdown(
-        """
+        f"""
 <div class='card'>
-  <h3>Latest flagged certificates</h3>
+  <h3>Latest flagged certificates {BADGE_FILTERED}</h3>
   <p class='tagline'>The fifty most recent hits in the current slice. Not every row is
   malicious: legitimate resellers and fan sites trip the rules too.</p>
 </div>
@@ -834,7 +977,7 @@ with tab_batch:
         st.markdown(
             f"""
 <div class='card'>
-  <h3>KEV monthly additions</h3>
+  <h3>KEV monthly additions {BADGE_STATIC}</h3>
   <p class='tagline'>Every time a CVE lands in CISA&rsquo;s {tip("KEV")} catalogue, it
   means there is evidence of active exploitation in the wild. The current
   month is rendered in a lighter shade because it is still in progress and
@@ -865,9 +1008,9 @@ with tab_batch:
 
     with col2:
         st.markdown(
-            """
+            f"""
 <div class='card'>
-  <h3>Hijacked IP ranges</h3>
+  <h3>Hijacked IP ranges {BADGE_STATIC}</h3>
   <p class='tagline'>Spamhaus bucketizes hijacked CIDRs by prefix length. Small blocks
   (/24 and below) dominate; attackers prefer splatter over single big takeovers.</p>
 </div>
@@ -876,6 +1019,14 @@ with tab_batch:
         )
         spam = q_spamhaus_buckets()
         if not spam.empty:
+            # Force prefix-length order (huge first, small last) so the bars
+            # read as a histogram of block sizes, not alphabetically.
+            bucket_order = [
+                "huge (/8-/16)",
+                "large (/17-/20)",
+                "medium (/21-/24)",
+                "small (/25+)",
+            ]
             fig = px.bar(
                 spam,
                 x="block_size_bucket",
@@ -883,10 +1034,11 @@ with tab_batch:
                 color="list",
                 color_discrete_map={"drop": ACCENT_PINK, "edrop": ACCENT_GOLD},
                 barmode="group",
+                category_orders={"block_size_bucket": bucket_order},
             )
             fig.update_layout(height=300, **CHART)
-            fig.update_xaxes(title_text="")
-            fig.update_yaxes(title_text="")
+            fig.update_xaxes(title_text="Block size (prefix length)")
+            fig.update_yaxes(title_text="Hijacked blocks")
             st.plotly_chart(fig, use_container_width=True, key="batch_spamhaus")
         st.markdown(
             "<div class='source'>mart_spamhaus_by_country &middot; DROP + EDROP lists.</div>",
@@ -896,9 +1048,9 @@ with tab_batch:
     col1, col2 = st.columns([1, 1])
     with col1:
         st.markdown(
-            """
+            f"""
 <div class='card'>
-  <h3>Top KEV vendors</h3>
+  <h3>Top KEV vendors {BADGE_STATIC}</h3>
   <p class='tagline'>Bar length is total CVEs in KEV; colour intensity is the
   percent of those linked to ransomware operations. High ratio matters more
   than high count.</p>
@@ -908,26 +1060,36 @@ with tab_batch:
         )
         kev_vendors = q_kev_vendors()
         if not kev_vendors.empty:
+            # Clamp the color scale at 50% so one outlier vendor (SmarterTools
+            # with 1 CVE, 100% ransomware-linked) doesn't flatten the rest of
+            # the gradient. The hover still shows the true ratio.
+            kv = kev_vendors.copy()
+            kv["label"] = kv["ransomware_ratio_pct"].map(lambda r: f"{r:.0f}%" if r > 0 else "")
             fig = go.Figure(
                 go.Bar(
-                    x=kev_vendors["cves"],
-                    y=kev_vendors["vendor"],
+                    x=kv["cves"],
+                    y=kv["vendor"],
                     orientation="h",
+                    text=kv["label"],
+                    textposition="outside",
+                    textfont=dict(color=ACCENT_GOLD, size=11),
                     marker=dict(
-                        color=kev_vendors["ransomware_ratio_pct"],
+                        color=kv["ransomware_ratio_pct"],
                         colorscale=[[0, ACCENT_VIOLET], [1, ACCENT_PINK]],
                         cmin=0,
-                        cmax=max(20, kev_vendors["ransomware_ratio_pct"].max()),
+                        cmax=50,
                         colorbar=dict(
                             title=dict(text="% ransomware", font=dict(color=TEXT_MUTED, size=10)),
                             tickfont=dict(color=TEXT_MUTED, size=9),
+                            tickvals=[0, 10, 25, 50],
+                            ticktext=["0%", "10%", "25%", "50%+"],
                             thickness=10,
                             len=0.7,
                             outlinewidth=0,
                             bgcolor="rgba(0,0,0,0)",
                         ),
                     ),
-                    customdata=kev_vendors[["ransomware_linked", "ransomware_ratio_pct"]].values,
+                    customdata=kv[["ransomware_linked", "ransomware_ratio_pct"]].values,
                     hovertemplate=(
                         "<b>%{y}</b><br>%{x} CVEs in KEV<br>"
                         "%{customdata[0]} tied to ransomware (%{customdata[1]:.1f}%)<extra></extra>"
@@ -935,6 +1097,7 @@ with tab_batch:
                 )
             )
             fig.update_layout(height=400, **CHART)
+            fig.update_xaxes(title_text="CVEs in KEV (label = % ransomware-linked)")
             fig.update_yaxes(autorange="reversed")
             st.plotly_chart(fig, use_container_width=True, key="batch_kev_vendors")
         st.markdown(
@@ -946,7 +1109,7 @@ with tab_batch:
         st.markdown(
             f"""
 <div class='card'>
-  <h3>Active C2s by hosting country</h3>
+  <h3>Active C2s by hosting country {BADGE_STATIC}</h3>
   <p class='tagline'>Countries where the actual {tip("C2")} servers sit. Not the same as
   attribution: hosting is fluid and most abuse lives in permissive transit networks.</p>
 </div>
@@ -955,12 +1118,12 @@ with tab_batch:
         )
         c2_country = q_c2_by_country()
         if not c2_country.empty:
-            top = c2_country[c2_country["country"] != "(unknown)"].head(15)
+            top = c2_country[c2_country["country"] != "(unknown)"].head(15).copy()
             top["tooltip"] = top["top_family"].map(malware_tooltip)
             fig = go.Figure(
                 go.Bar(
                     x=top["active_c2"],
-                    y=top["country"],
+                    y=top["country_name"],
                     orientation="h",
                     marker_color=ACCENT_CYAN,
                     customdata=top[["top_family", "tooltip", "sources"]].values,
@@ -973,6 +1136,7 @@ with tab_batch:
                 )
             )
             fig.update_layout(height=400, **CHART)
+            fig.update_xaxes(title_text="Active C2s")
             fig.update_yaxes(autorange="reversed")
             st.plotly_chart(fig, use_container_width=True, key="batch_c2_country")
         st.markdown(
@@ -991,63 +1155,89 @@ with tab_map:
     st.markdown(
         f"""
 <div class='card'>
-  <h3>Where the C2 servers live</h3>
-  <p class='tagline'>Every dot is a country currently hosting at least one
-  tracked {tip("C2")} server. Dot size scales with the number of active C2s,
-  colour with the dominant malware family. Hosting country is a noisy signal
-  (hosting is cheap and fluid, attribution belongs to the operators not the
-  servers) but it still paints a useful picture: attackers cluster where
-  transit is permissive, bulletproof providers tolerate them and takedown
-  notices are slow to land.</p>
+  <h3>Where the {tip("C2", "C2")} servers live {BADGE_STATIC}</h3>
+  <p class='tagline'>Every dot is one active {tip("C2")} IP, placed at the
+  lat/lon {tip("MaxMind", "MaxMind")} GeoLite2-City reports for its hosting block.
+  Colour is the {tip("malware", "malware")} family. Hosting location is a noisy signal
+  (hosting is cheap and fluid, attribution belongs to operators not servers) but it
+  still paints a useful picture: attackers cluster where transit is permissive,
+  bulletproof providers tolerate them and takedown notices are slow to land.</p>
+  <p class='tagline' style='margin-top:0.5rem;'>Accuracy is coarse: many of
+  the free-tier records only resolve to the country-level centroid, so IPs
+  from the same {tip("AS", "AS")} land on top of each other. We jitter &plusmn;0.3&deg;
+  to pull apart stacks around a single coordinate.</p>
 </div>
 """,
         unsafe_allow_html=True,
     )
 
-    c2_country = q_c2_by_country()
-    mappable = c2_country[c2_country["country"].isin(COUNTRY_META.keys())].copy()
-    unmapped = c2_country[~c2_country["country"].isin(COUNTRY_META.keys())].copy()
+    c2_rows = q_c2_active_rows()
+    mappable = c2_rows.dropna(subset=["latitude", "longitude"]).copy()
+    unmapped = c2_rows[c2_rows["latitude"].isna()].copy()
+
     if mappable.empty:
         st.info("No geolocated C2s right now.")
     else:
-        mappable["iso3"] = mappable["country"].map(lambda c: COUNTRY_META[c][0])
-        mappable["country_name"] = mappable["country"].map(lambda c: COUNTRY_META[c][1])
-        mappable["lat"] = mappable["country"].map(lambda c: COUNTRY_META[c][2])
-        mappable["lon"] = mappable["country"].map(lambda c: COUNTRY_META[c][3])
-        mappable["top_family_display"] = mappable["top_family"].fillna("(unknown)")
-        mappable["tooltip"] = mappable["top_family"].map(malware_tooltip)
+        # Deterministic jitter so dots don't dance across reruns: hash the IP
+        # and map to +/- 0.3 degrees. Keeps IPs on the same AS visually
+        # separable without lying about the location (jitter << country size).
+        def _jitter(ip: str, i: int) -> float:
+            h = int(hashlib.md5(f"{ip}:{i}".encode()).hexdigest()[:8], 16)
+            return ((h % 1000) / 1000.0 - 0.5) * 0.6  # +/- 0.3 deg
 
-        fig = go.Figure(
-            go.Scattergeo(
-                lon=mappable["lon"],
-                lat=mappable["lat"],
-                text=mappable["country_name"],
-                customdata=mappable[["active_c2", "top_family_display", "tooltip", "sources"]].values,
-                marker=dict(
-                    size=mappable["active_c2"],
-                    sizemode="area",
-                    sizeref=2.0 * mappable["active_c2"].max() / (60.0**2),
-                    sizemin=6,
-                    color=mappable["active_c2"],
-                    colorscale=[[0, ACCENT_VIOLET], [0.5, ACCENT_PINK], [1, ACCENT_GOLD]],
-                    line=dict(color=ACCENT_CYAN, width=1),
-                    opacity=0.85,
-                    colorbar=dict(
-                        title=dict(text="Active C2s", font=dict(color=TEXT_MUTED, size=11)),
-                        tickfont=dict(color=TEXT_MUTED, size=10),
-                        thickness=12,
-                        len=0.7,
-                        outlinewidth=0,
-                        bgcolor="rgba(0,0,0,0)",
+        mappable["lat_jit"] = [
+            lat + _jitter(ip, 0) for ip, lat in zip(mappable["ip_address"], mappable["latitude"], strict=True)
+        ]
+        mappable["lon_jit"] = [
+            lon + _jitter(ip, 1) for ip, lon in zip(mappable["ip_address"], mappable["longitude"], strict=True)
+        ]
+        mappable["place"] = [
+            f"{c}, {n}" if c else n for c, n in zip(mappable["city_name"], mappable["country_name"], strict=True)
+        ]
+        mappable["fam_display"] = mappable["malware_family"].fillna("(unknown)")
+        mappable["desc"] = mappable["malware_family"].map(malware_tooltip)
+
+        # One trace per malware family so plotly auto-assigns colours and the
+        # legend lets you toggle families on/off.
+        families = mappable["fam_display"].value_counts()
+        palette = [
+            ACCENT_PINK,
+            ACCENT_CYAN,
+            ACCENT_GOLD,
+            ACCENT_VIOLET,
+            ACCENT_GREEN,
+            "#ff9acb",
+            "#7ae9ff",
+            "#ffdd7d",
+            "#b69eff",
+            "#7affcb",
+        ]
+        fig = go.Figure()
+        for idx, (fam, _count) in enumerate(families.items()):
+            sub = mappable[mappable["fam_display"] == fam]
+            fig.add_trace(
+                go.Scattergeo(
+                    lon=sub["lon_jit"],
+                    lat=sub["lat_jit"],
+                    name=fam,
+                    text=sub["ip_address"],
+                    customdata=sub[["place", "fam_display", "desc", "port", "source"]].values,
+                    marker=dict(
+                        size=9,
+                        color=palette[idx % len(palette)],
+                        line=dict(color="rgba(255,255,255,0.35)", width=0.5),
+                        opacity=0.85,
                     ),
-                ),
-                hovertemplate=(
-                    "<b>%{text}</b><br>%{customdata[0]} active C2s<br>"
-                    "Top family: %{customdata[1]}<br><i>%{customdata[2]}</i><br>"
-                    "Sources: %{customdata[3]}<extra></extra>"
-                ),
+                    hovertemplate=(
+                        "<b>%{text}</b>:%{customdata[3]}<br>"
+                        "%{customdata[0]}<br>"
+                        "Family: %{customdata[1]}<br>"
+                        "<i>%{customdata[2]}</i><br>"
+                        "Source: %{customdata[4]}<extra></extra>"
+                    ),
+                )
             )
-        )
+
         fig.update_geos(
             projection_type="natural earth",
             bgcolor=BG_CARD,
@@ -1065,24 +1255,31 @@ with tab_map:
             margin=dict(l=0, r=0, t=10, b=0),
             paper_bgcolor=BG_CARD,
             geo=dict(bgcolor=BG_CARD),
+            legend=dict(
+                bgcolor="rgba(0,0,0,0.3)",
+                bordercolor=BORDER,
+                borderwidth=1,
+                font=dict(color=TEXT_MUTED, size=10),
+            ),
         )
-        st.plotly_chart(fig, use_container_width=True, key="map_c2_scatter")
+        st.plotly_chart(fig, use_container_width=True, key="map_c2_ip_scatter")
 
         col1, col2 = st.columns([1, 1])
         with col1:
             st.markdown(
-                "<div class='card'><h3>Top countries</h3><p class='tagline'>Raw numbers behind the map.</p></div>",
+                "<div class='card'><h3>Geolocated IPs</h3><p class='tagline'>Active C2s placed on the map.</p></div>",
                 unsafe_allow_html=True,
             )
             st.dataframe(
                 mappable.rename(
                     columns={
-                        "country_name": "Country",
-                        "active_c2": "Active C2s",
-                        "top_family_display": "Top family",
-                        "sources": "Sources",
+                        "ip_address": "IP",
+                        "port": "Port",
+                        "malware_family": "Family",
+                        "place": "Place",
+                        "source": "Source",
                     }
-                )[["Country", "Active C2s", "Top family", "Sources"]].head(20),
+                )[["IP", "Port", "Family", "Place", "Source"]].head(30),
                 use_container_width=True,
                 hide_index=True,
                 height=380,
@@ -1090,25 +1287,30 @@ with tab_map:
         with col2:
             if not unmapped.empty:
                 st.markdown(
-                    "<div class='card'><h3>Unmapped</h3>"
-                    "<p class='tagline'>Countries the feed reports without an ISO centroid in "
-                    "our dict (usually tiny or edge-case territories), plus ThreatFox rows "
-                    "whose IP didn&rsquo;t match any GeoLite2 block.</p></div>",
+                    "<div class='card'><h3>Not geolocated</h3>"
+                    "<p class='tagline'>IPs whose block doesn&rsquo;t match a GeoLite2 "
+                    "row (usually tiny registrations, anycast or Seychelles-flagged "
+                    "bulletproof hosts). They count towards totals but don&rsquo;t "
+                    "appear on the map.</p></div>",
                     unsafe_allow_html=True,
                 )
-                unmapped_view = unmapped.rename(columns={"country": "Country", "active_c2": "Active C2s"})[
-                    ["Country", "Active C2s"]
-                ]
                 st.dataframe(
-                    unmapped_view,
+                    unmapped.rename(
+                        columns={
+                            "ip_address": "IP",
+                            "port": "Port",
+                            "malware_family": "Family",
+                            "country_name": "Country",
+                        }
+                    )[["IP", "Port", "Family", "Country"]],
                     use_container_width=True,
                     hide_index=True,
                     height=240,
                 )
         st.markdown(
             "<div class='source'>"
-            "mart_dashboard_c2_by_country &middot; lat/lon from country centroids "
-            "(one dot per country)."
+            "mart_c2_active &middot; one row per IP, lat/lon from MaxMind GeoLite2-City. "
+            "Jitter &plusmn;0.3&deg; applied so IPs sharing a block are visible."
             "</div>",
             unsafe_allow_html=True,
         )
@@ -1118,71 +1320,99 @@ with tab_map:
 # TAB: STACK
 # =============================================================================
 
+
+def _tag_link(label: str, url: str) -> str:
+    # Tag rendered as a link, inherits the .tag look so the Stack tab is
+    # consistent with the inline tags used elsewhere in the copy.
+    return (
+        f'<a class="tag" href="{url}" target="_blank" rel="noopener" '
+        f'style="color:inherit;border-bottom:none;">{label}</a>'
+    )
+
+
 with tab_about:
     col1, col2 = st.columns([1, 1])
     with col1:
         st.markdown(
-            """
-<div class='card'>
-  <h3>Streaming</h3>
-  <p class='tagline'>Five always-on Fly.io machines: a self-hosted certstream-server-go
-  aggregates the CT firehose, a Python producer pushes events to Redpanda Cloud, a
-  detector enriches and windows them, a sink lands everything into MotherDuck.</p>
-  <div>
-    <span class='tag'>certstream-server-go</span>
-    <span class='tag'>Redpanda Cloud</span>
-    <span class='tag'>confluent-kafka</span>
-    <span class='tag'>rapidfuzz</span>
-    <span class='tag'>PyFlink (reference job)</span>
-  </div>
-</div>
-<div class='card'>
-  <h3>Batch</h3>
-  <p class='tagline'>Kestra schedules the daily refresh: six ingestion pipelines
-  load raw feeds into MotherDuck through <span class='tag'>dlt</span>, then dbt
-  transforms staging views into pre-aggregated marts that back the dashboard.</p>
-  <div>
-    <span class='tag'>Kestra</span>
-    <span class='tag'>dlt</span>
-    <span class='tag'>dbt-duckdb</span>
-    <span class='tag'>MotherDuck</span>
-  </div>
-</div>
-""",
+            "<div class='card'>"
+            "<h3>Streaming</h3>"
+            "<p class='tagline'>Five always-on Fly.io machines: a self-hosted "
+            "certstream-server-go aggregates the CT firehose, a Python producer "
+            "pushes events to Redpanda Cloud, a detector enriches and windows "
+            "them, a sink lands everything into MotherDuck.</p>"
+            "<div>"
+            + _tag_link("certstream-server-go", "https://github.com/d-Rickyy-b/certstream-server-go")
+            + _tag_link("Redpanda Cloud", "https://redpanda.com/")
+            + _tag_link("confluent-kafka", "https://github.com/confluentinc/confluent-kafka-python")
+            + _tag_link("rapidfuzz", "https://github.com/rapidfuzz/RapidFuzz")
+            + _tag_link(
+                "PyFlink (reference job)",
+                "https://nightlies.apache.org/flink/flink-docs-release-1.19/docs/dev/python/overview/",
+            )
+            + "</div></div>"
+            "<div class='card'>"
+            "<h3>Batch</h3>"
+            "<p class='tagline'>Kestra schedules the daily refresh: six dlt "
+            "pipelines load raw feeds into MotherDuck, then dbt transforms "
+            "staging views into pre-aggregated marts that back the dashboard.</p>"
+            "<div>"
+            + _tag_link("Kestra", "https://kestra.io/")
+            + _tag_link("dlt", "https://dlthub.com/")
+            + _tag_link("dbt-duckdb", "https://github.com/duckdb/dbt-duckdb")
+            + _tag_link("MotherDuck", "https://motherduck.com/")
+            + "</div></div>",
             unsafe_allow_html=True,
         )
     with col2:
         st.markdown(
-            """
-<div class='card'>
-  <h3>Dashboard and CI/CD</h3>
-  <p class='tagline'>Streamlit Cloud hosts this page and reads pre-aggregated marts
-  straight from MotherDuck. GitHub Actions runs ruff, pytest and dbt parse on every
-  push, and re-deploys the four Python services to Fly.io when anything under
-  <span class='tag'>streaming/</span> or <span class='tag'>batch/</span> changes.</p>
-  <div>
-    <span class='tag'>Streamlit Cloud</span>
-    <span class='tag'>plotly</span>
-    <span class='tag'>GitHub Actions</span>
-    <span class='tag'>Fly.io</span>
-  </div>
-</div>
-<div class='card'>
-  <h3>Data sources</h3>
-  <p class='tagline'>All public, all free:</p>
-  <div>
-    <span class='tag'>Certificate Transparency logs</span>
-    <span class='tag'>CISA KEV</span>
-    <span class='tag'>abuse.ch Feodo Tracker</span>
-    <span class='tag'>abuse.ch ThreatFox</span>
-    <span class='tag'>Spamhaus DROP / EDROP</span>
-    <span class='tag'>MITRE ATT&amp;CK</span>
-    <span class='tag'>MaxMind GeoLite2</span>
-  </div>
-  <p class='tagline' style='margin-top:0.9rem;'>Source on
-  <a href='https://github.com/pavel-kalmykov/phishing-radar'>GitHub</a>.
-  Data Engineering Zoomcamp 2026.</p>
-</div>
-""",
+            "<div class='card'>"
+            "<h3>Dashboard and CI/CD</h3>"
+            "<p class='tagline'>Streamlit Cloud hosts this page and reads "
+            "pre-aggregated marts straight from MotherDuck. GitHub Actions runs "
+            "ruff, pytest and dbt parse on every push, and re-deploys the four "
+            "Python services plus Kestra to Fly.io when anything under "
+            "<span class='tag'>streaming/</span>, <span class='tag'>batch/</span>, "
+            "<span class='tag'>kestra/</span> or <span class='tag'>dbt/</span> "
+            "changes.</p>"
+            "<div>"
+            + _tag_link("Streamlit Cloud", "https://streamlit.io/cloud")
+            + _tag_link("Plotly", "https://plotly.com/python/")
+            + _tag_link("GitHub Actions", "https://github.com/pavel-kalmykov/phishing-radar/actions")
+            + _tag_link("Fly.io", "https://fly.io/")
+            + "</div></div>"
+            "<div class='card'>"
+            "<h3>Data sources</h3>"
+            "<p class='tagline'>All public, all free:</p>"
+            "<div>"
+            + _tag_link("Certificate Transparency logs", "https://certificate.transparency.dev/")
+            + _tag_link("CISA KEV", "https://www.cisa.gov/known-exploited-vulnerabilities-catalog")
+            + _tag_link("abuse.ch Feodo Tracker", "https://feodotracker.abuse.ch/")
+            + _tag_link("abuse.ch ThreatFox", "https://threatfox.abuse.ch/")
+            + _tag_link("Spamhaus DROP / EDROP", "https://www.spamhaus.org/drop/")
+            + _tag_link("MITRE ATT&amp;CK", "https://attack.mitre.org/")
+            + _tag_link("MaxMind GeoLite2", "https://dev.maxmind.com/geoip/geolite2-free-geolocation-data")
+            + "</div>"
+            "<p class='tagline' style='margin-top:0.9rem;'>Source on "
+            "<a href='https://github.com/pavel-kalmykov/phishing-radar'>GitHub</a>. "
+            "Data Engineering Zoomcamp 2026.</p>"
+            "</div>",
             unsafe_allow_html=True,
         )
+
+
+# =============================================================================
+# FOOTER
+# =============================================================================
+
+st.markdown(
+    "<div class='footer'>"
+    "<span>Phishing Radar &middot; capstone for the "
+    "<a href='https://github.com/DataTalksClub/data-engineering-zoomcamp'>"
+    "DataTalksClub Data Engineering Zoomcamp 2026</a> by "
+    "<a href='https://github.com/pavel-kalmykov'>@pavel-kalmykov</a>.</span>"
+    "<span>Data from public feeds; nothing here is actionable attribution. "
+    "See the source on "
+    "<a href='https://github.com/pavel-kalmykov/phishing-radar'>GitHub</a>.</span>"
+    "</div>",
+    unsafe_allow_html=True,
+)
