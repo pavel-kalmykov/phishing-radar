@@ -98,6 +98,38 @@ flowchart LR
 
 Expected monthly cost: around 10 EUR (Kestra VM) plus 4 x ~2 EUR for the small always-on machines. Everything else is on free tiers.
 
+## Data warehouse notes (for reviewers)
+
+> [!NOTE]
+> The course rubric asks for "tables partitioned and clustered in a way that
+> makes sense for the upstream queries (with explanation)". MotherDuck (DuckDB)
+> doesn't expose BigQuery-style `PARTITION BY` / `CLUSTER BY` clauses, so this
+> section explains the equivalent story.
+
+- **Storage format.** DuckDB persists tables as columnar blocks with zone maps
+  and dictionary encoding per column. That's the native "clustering":
+  predicate pushdown uses min/max stats at the block level, so filters on
+  `seen_at_ts`, `country`, `malware_family`, `vendor`, `issuer_cn`, `date_added`
+  (the columns the dashboard actually filters by) skip blocks the same way a
+  BigQuery clustered table skips micropartitions.
+- **Size matters.** The marts are tiny. `mart_dashboard_kpis` is one row,
+  `mart_dashboard_c2_by_country` is 22 rows, `mart_dashboard_kev_vendors` is
+  20 rows, etc. Partitioning a 20-row table buys nothing. The biggest table is
+  `geoip_city_blocks` at ~3.7M rows, which is already range-partitioned
+  implicitly by CIDR (the IP-range join in `stg_geoip_city` uses a `between`
+  filter against the `start_int`/`end_int` columns; DuckDB's zone maps make
+  this linear scan effectively a range scan).
+- **Materialisation strategy.** Every dashboard query reads from
+  `table`-materialised marts (persisted) rather than views, so the reads don't
+  recompute on every page refresh. See `dbt/models/marts/mart_dashboard_*.sql`
+  for the pre-aggregated layer.
+- **What we'd do at 100x scale.** If the `raw_suspicious_certs` table grew to
+  hundreds of millions of rows, we would partition the raw landing table by
+  `date(received_at)` (DuckDB supports this via multi-file storage / Hive
+  partitioning for Parquet), and cluster the per-brand mart by `(brand, day)`.
+  At our current working set (~4k suspicious certs/day) the marts fit in a few
+  KB and any partitioning would be ceremony.
+
 ## Running it locally
 
 Requirements: Python 3.11+, Docker, [`uv`](https://docs.astral.sh/uv/), [`just`](https://github.com/casey/just).
