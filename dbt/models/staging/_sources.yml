@@ -7,22 +7,34 @@ sources:
     schema: "{{ env_var('MD_DATABASE', 'main') }}"
     tables:
       - name: cisa_kev
-        description: CISA Known Exploited Vulnerabilities catalog
+        description: CISA Known Exploited Vulnerabilities catalog (refreshed daily by Kestra; CISA publishes irregular updates so max(date_added) may legitimately be days old even when the loader ran)
+        loaded_at_field: cast(date_added as timestamp)
+        freshness:
+          warn_after: {count: 14, period: day}
+          error_after: {count: 30, period: day}
         columns:
           - name: cve_id
             tests:
               - not_null
               - unique
       - name: feodo_c2
-        description: abuse.ch Feodo Tracker active C2 IPs
+        description: abuse.ch Feodo Tracker active C2 IPs (refreshed every minutes by Kestra)
+        loaded_at_field: cast(last_online as timestamp)
+        freshness:
+          warn_after: {count: 6, period: hour}
+          error_after: {count: 24, period: hour}
         columns:
           - name: ip_address
             tests:
               - not_null
       - name: threatfox_iocs
-        description: abuse.ch ThreatFox IoCs (botnet_cc threat_type only)
+        description: abuse.ch ThreatFox IoCs (botnet_cc threat_type only, refreshed every minutes by Kestra)
+        loaded_at_field: cast(last_seen_utc as timestamp)
+        freshness:
+          warn_after: {count: 6, period: hour}
+          error_after: {count: 24, period: hour}
       - name: geoip_country_blocks
-        description: MaxMind GeoLite2 IPv4 country CIDR blocks
+        description: MaxMind GeoLite2 IPv4 country CIDR blocks (refreshed weekly by Kestra; rows have no per-row timestamp so freshness lives at the dlt _dlt_loads metadata layer)
       - name: geoip_country_locations
         description: MaxMind GeoLite2 geoname_id to ISO country lookup
       - name: geoip_city_blocks
@@ -30,13 +42,13 @@ sources:
       - name: geoip_city_locations
         description: MaxMind GeoLite2 geoname_id to city/region/country lookup
       - name: spamhaus_drop
-        description: Spamhaus DROP and EDROP CIDR blocklists
+        description: Spamhaus DROP and EDROP CIDR blocklists (refreshed daily by Kestra; rows have no per-row timestamp so freshness lives at the dlt _dlt_loads metadata layer)
         columns:
           - name: cidr
             tests:
               - not_null
       - name: mitre_techniques
-        description: MITRE ATT&CK Enterprise attack patterns
+        description: MITRE ATT&CK Enterprise attack patterns (monthly cadence; rows have no per-row timestamp so freshness lives at the dlt _dlt_loads metadata layer)
         columns:
           - name: attack_id
             tests:
@@ -46,8 +58,20 @@ sources:
       - name: mitre_groups
         description: MITRE ATT&CK intrusion sets (APTs)
       - name: raw_suspicious_certs
-        description: Suspicious certificates flagged by the PyFlink detector (landed from Kafka topic `suspicious_certs`)
+        description: Suspicious certificates flagged by the detector (landed from Kafka topic `suspicious_certs`)
+        loaded_at_field: received_at
+        freshness:
+          warn_after: {count: 30, period: minute}
+          error_after: {count: 4, period: hour}
       - name: raw_cert_stats_1min
         description: Per-minute tumbling-window cert issuance stats per CA (landed from Kafka topic `cert_stats_1min`)
+        loaded_at_field: received_at
+        freshness:
+          warn_after: {count: 30, period: minute}
+          error_after: {count: 4, period: hour}
       - name: raw_certstream_events
         description: Raw CertStream events (landed from Kafka topic `certstream_events`)
+        loaded_at_field: received_at
+        freshness:
+          warn_after: {count: 30, period: minute}
+          error_after: {count: 4, period: hour}

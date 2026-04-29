@@ -47,6 +47,10 @@ dbt-test:
 dbt-deps:
     cd dbt && uv run dbt deps --profiles-dir .
 
+# Run dbt source freshness checks (warns when ingestion is stale)
+dbt-freshness:
+    cd dbt && uv run dbt source freshness --profiles-dir .
+
 # Launch the Streamlit dashboard on localhost:8501
 dashboard:
     uv run streamlit run dashboard/app.py
