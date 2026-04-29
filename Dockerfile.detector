@@ -15,10 +15,12 @@ RUN pip install --no-cache-dir uv
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev
 
-# Install apache-flink directly into the venv. --upgrade so pip resolves the
-# pyarrow downgrade required by apache-beam (a transitive dep of pyflink);
-# the rest of the venv stays on whatever uv resolved.
-RUN /app/.venv/bin/pip install --no-cache-dir 'apache-flink>=1.20.0,<1.21.0' --upgrade
+# Install apache-flink directly into the venv. uv sync does not bundle pip,
+# so we drive the install through `uv pip install --python` which targets
+# the venv explicitly. --upgrade lets the resolver downgrade pyarrow to the
+# version pyflink's transitive apache-beam wants; the rest of the venv stays
+# on whatever uv had resolved.
+RUN uv pip install --python /app/.venv/bin/python --no-cache-dir 'apache-flink>=1.20.0,<1.21.0' --upgrade
 
 
 # Stage 2 — runtime: Eclipse Temurin JRE 17 with Python 3.11 slotted in.
