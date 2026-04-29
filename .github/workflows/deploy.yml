@@ -24,6 +24,11 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # GitHub environment 'production' must be configured in repo Settings >
+    # Environments with at least one required reviewer. This blocks the matrix
+    # from running until the reviewer approves, so a typo on main does not
+    # redeploy four apps in seconds.
+    environment: production
     strategy:
       fail-fast: false
       matrix:

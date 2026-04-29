@@ -238,7 +238,7 @@ flyctl volumes create kestra_data --region cdg --size 1 --app phishing-radar-kes
 flyctl deploy --config deploy/kestra/fly.toml     --app phishing-radar-kestra     --ha=false
 ```
 
-The `.github/workflows/deploy.yml` GitHub Action redeploys the three Python services on every push to `main`.
+The `.github/workflows/deploy.yml` GitHub Action redeploys the four services on every push to `main`, but the workflow targets the `production` GitHub environment. Configure that environment under repo *Settings → Environments → production* with at least one required reviewer (yourself). Pushes will queue the deploy and wait for an explicit approval click before any `flyctl deploy` runs, so a typo on main cannot silently redeploy four apps in seconds.
 
 ## Dashboard
 
