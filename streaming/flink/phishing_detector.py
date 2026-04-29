@@ -186,17 +186,27 @@ def build_pipeline() -> StreamExecutionEnvironment:
         log.warning("FLINK_CONNECTOR_JARS_DIR=%s does not exist", jar_dir)
 
     # --- Source: certstream_events ---
+    # Group ID is timestamped so each redeploy starts as a fresh consumer
+    # group; the older "phishing-detector" group accumulated committed
+    # offsets across the iteration churn and the source ended up sitting
+    # idle on a stale offset.
+    import time as _time
+
+    group_id = f"phishing-detector-{int(_time.time())}"
     sasl = _kafka_sasl_props()
     source_builder = (
         KafkaSource.builder()
         .set_bootstrap_servers(KAFKA_BOOTSTRAP)
         .set_topics(CERTSTREAM_TOPIC)
-        .set_group_id("phishing-detector")
+        .set_group_id(group_id)
         .set_starting_offsets(KafkaOffsetsInitializer.latest())
         .set_value_only_deserializer(SimpleStringSchema())
     )
     for k, v in sasl.items():
         source_builder = source_builder.set_property(k, v)
+    # Belt-and-braces: if for any reason the offset cannot be read, default
+    # to the latest. Avoids replaying the entire firehose on every redeploy.
+    source_builder = source_builder.set_property("auto.offset.reset", "latest")
     source = source_builder.build()
 
     raw = env.from_source(
