@@ -33,10 +33,35 @@ jobs:
       - name: Pytest
         run: uv run pytest -v
 
+      - name: dbt deps
+        env:
+          MOTHERDUCK_TOKEN: ${{ secrets.MOTHERDUCK_TOKEN }}
+          MD_CATALOG: phishing_radar
+          MD_DATABASE: main
+        run: cd dbt && uv run dbt deps --profiles-dir .
+        if: env.MOTHERDUCK_TOKEN != ''
+
       - name: dbt parse (structural compilation)
         env:
           MOTHERDUCK_TOKEN: ${{ secrets.MOTHERDUCK_TOKEN }}
           MD_CATALOG: phishing_radar
           MD_DATABASE: main
-        run: cd dbt && uv run dbt deps --profiles-dir . && uv run dbt parse --profiles-dir .
+        run: cd dbt && uv run dbt parse --profiles-dir .
+        if: env.MOTHERDUCK_TOKEN != ''
+
+      - name: dbt test (schema + singular tests against built marts)
+        env:
+          MOTHERDUCK_TOKEN: ${{ secrets.MOTHERDUCK_TOKEN }}
+          MD_CATALOG: phishing_radar
+          MD_DATABASE: main
+        run: cd dbt && uv run dbt test --profiles-dir .
+        if: env.MOTHERDUCK_TOKEN != ''
+
+      - name: dbt source freshness (warn-only)
+        env:
+          MOTHERDUCK_TOKEN: ${{ secrets.MOTHERDUCK_TOKEN }}
+          MD_CATALOG: phishing_radar
+          MD_DATABASE: main
+        run: cd dbt && uv run dbt source freshness --profiles-dir .
+        continue-on-error: true
         if: env.MOTHERDUCK_TOKEN != ''
