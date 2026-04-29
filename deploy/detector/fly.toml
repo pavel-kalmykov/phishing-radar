@@ -15,12 +15,17 @@ primary_region = "cdg"
   CERTSTREAM_TOPIC = "certstream_events"
   SUSPICIOUS_TOPIC = "suspicious_certs"
   STATS_TOPIC = "cert_stats_1min"
+  # Bound the JVM so it does not silently consume the whole VM and stall
+  # the Python parent waiting on the py4j gateway. -Xmx caps heap, G1GC
+  # keeps GC pauses short on small heaps.
+  JAVA_OPTS = "-Xms256m -Xmx768m -XX:+UseG1GC"
 
 [[vm]]
-  # PyFlink MiniCluster + Python UDFs: JVM heap (~512 MB cap) + Py worker
-  # (~250 MB) + native + headroom. 256 MB OOM-killed; 1 GB is the floor.
+  # PyFlink MiniCluster + Python UDFs + JVM heap + native. 1 GB stalled
+  # silently between gateway-init and pipeline-build (RAM at ~76% with no
+  # forward progress); 2 GB removes the doubt.
   size = "shared-cpu-1x"
-  memory = "1024mb"
+  memory = "2048mb"
 
 [processes]
   app = "python -m streaming.flink.phishing_detector"
