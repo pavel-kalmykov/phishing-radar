@@ -83,6 +83,15 @@ def _build_consumer() -> Consumer:
         "group.id": "phishing-radar-md-sink",
         "auto.offset.reset": "earliest",
         "enable.auto.commit": "true",
+        # Fair share across the three subscribed topics. Default
+        # fetch.max.bytes is ~50 MB which lets librdkafka return one
+        # full fetch entirely from the certstream_events backlog while
+        # suspicious_certs and cert_stats_1min wait their turn. Capping
+        # the per-fetch budget at 4 MB forces librdkafka to rotate between
+        # topics on every poll cycle, so the lower-volume topics keep
+        # making forward progress while the firehose backlog drains.
+        "fetch.max.bytes": "4194304",
+        "max.partition.fetch.bytes": "1048576",
     }
     if KAFKA_SASL_MECH:
         config["security.protocol"] = "SASL_SSL"
