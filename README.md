@@ -191,6 +191,9 @@ Median observed latency in production: about 60 s. Floor is the detector window 
 
 Nothing else is required. CISA KEV, abuse.ch Feodo, abuse.ch ThreatFox, Spamhaus and MITRE ATT&CK feeds are all anonymous (no API keys) and pulled directly over HTTPS.
 
+> [!NOTE]
+> **Reproducibility.** `pyproject.toml` declares dependencies with `>=` floors so the project can pick up patch releases. The exact, deterministic dependency tree lives in `uv.lock` (committed to the repo). `just setup` runs `uv sync --frozen` under the hood, which reuses the lockfile verbatim and never resolves new versions silently. Refresh the lock with `uv lock --upgrade` only when you intend to bump.
+
 ### Bring everything up
 
 ```bash
