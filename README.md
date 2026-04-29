@@ -98,6 +98,43 @@ flowchart LR
 
 Expected monthly cost: around 10 EUR (Kestra VM) plus 4 x ~2 EUR for the small always-on machines. Everything else is on free tiers.
 
+## Latency, throughput and backpressure
+
+The README calls the pipeline "real-time". This section spells out what that means in numbers and where the limits sit.
+
+**End-to-end latency**, from a CA publishing a certificate to it appearing in the dashboard:
+
+| Hop | Typical | Worst case |
+|---|---|---|
+| CT log entry to `certstream-server-go` | ms | seconds |
+| `certstream-server-go` to producer WebSocket | ms | seconds (reconnect window: up to 60 s) |
+| Producer batch (`linger.ms=50`, `acks=all`) | 50 to 200 ms | seconds (broker slow) |
+| Broker to detector consumer poll | ms | seconds |
+| Detector tumbling window emit | up to 60 s | up to 60 s (window granularity) |
+| Sink poll + flush (`BATCH_SIZE=500`, `FLUSH_SECONDS=10`) | 1 to 10 s | 10 s (idle flush) |
+| Streamlit cache TTL | 0 to 60 s | 60 s |
+
+Median observed latency in production: about 60 s. Floor is the detector window plus the sink flush, so anything below 30 s is not achievable without redesign.
+
+**Throughput observed**:
+
+- CT firehose: ~200 certs/s sustained, peaks to ~500 certs/s.
+- Producer to Kafka: ~1 to 2 MB/s after zstd compression, far below broker capacity.
+- Detector: ~5,000 to 20,000 certs/window evaluated, ~1,000 to 1,500 suspicious certs/min emitted at peak hours.
+- Sink to MotherDuck: 50 to 200 inserts/s during normal operation; drained 100k+ message backlogs at 1,500 rows/s.
+
+**Backpressure**:
+
+- Producer side: librdkafka holds an in-process queue (`queue.buffering.max.messages` default 100k). When the broker is slow, `produce()` blocks the asyncio task that reads the WebSocket. The upstream `certstream-server-go` then either buffers or drops on its end; we do not control that.
+- Sink side: the consumer poll has a 1 s timeout, the buffer is bounded by `SINK_BATCH_SIZE` (default 500) and flushes are time-bounded by `SINK_FLUSH_SECONDS` (default 10). If MotherDuck is slow, the consumer naturally lags behind its committed offset; offsets advance only after a successful flush, so at-least-once delivery survives a sink crash mid-batch (the next run replays).
+
+**No circuit breaker.** The detector does not shed load when input rate exceeds the rate it can fingerprint and emit. We rely on the bounded per-window state and on Kafka acting as the disk-backed buffer ahead of the consumer. If the detector falls permanently behind, the topic retains messages up to the cluster retention (24 h on the Redpanda Cloud serverless plan) and the dashboard freshness alert fires (`dbt source freshness`).
+
+**Known stress points** (already on the work list):
+
+- Sink consumer freeze: the consumer occasionally stops polling without crashing the process. The auto-restart health check ([`A13`](#known-limitations)) detects no flushes for N minutes and exits, letting Fly restart the machine.
+- Multi-topic fair-share: a single Kafka consumer subscribed to three topics is not strictly fair-share across topics in librdkafka. With a multi-million-row certstream backlog, `suspicious_certs` can lag. Mitigation: `fetch.max.partition.bytes` tuning, or split into per-topic consumers.
+
 ## Data warehouse notes (for reviewers)
 
 > [!NOTE]
@@ -242,6 +279,19 @@ Every widget reads from pre-aggregated marts (`mart_dashboard_kpis`, `mart_dashb
 - `dbt test` runs 13 schema tests plus 1 singular test (IP format sanity).
 - Detector design note: `docs/detection_alternatives.md` explains why we moved from Levenshtein to Damerau-Levenshtein + Jaro-Winkler and why MinHash was considered then dropped for this workload.
 - CI workflow at `.github/workflows/ci.yml`.
+
+## Known limitations
+
+These are intentional trade-offs, not bugs. The portfolio version of the project keeps the architecture honest about what it does and does not guarantee.
+
+- **At-least-once delivery, not exactly-once.** The Kafka producer is configured with `acks=all` and idempotence, but the sink commits Kafka offsets after a MotherDuck flush. If the sink is killed between flush and commit, the next run replays the last batch and dedup happens at the mart layer (`select distinct ...`). Acceptable for analytics use; not safe for billing.
+- **Detection latency floor.** The detector uses 1-minute tumbling windows to keep state bounded and emit deterministic stats. In practice a suspicious cert appears in the dashboard 60 to 120 seconds after the CA published it. That is "near real-time"; it is not sub-second.
+- **CT firehose loss.** We rely on `certstream-server-go` as the upstream WebSocket aggregator. If the producer disconnects (keepalive timeout, transient network), events emitted during the gap are not replayed. Reconnect logic is in place; replay is not.
+- **Single-instance services.** Each Fly app runs one machine. No leader election, no HA. Recovery depends on Fly's restart policy and on the auto-restart health check that detects consumer freezes. A region outage takes the pipeline down until a manual fly redeploy.
+- **Brand allowlist is the detection scope.** The detector only flags impersonation against brands declared in the configuration (`STREAMING_BRAND_LIST_PATH`). Adding a brand requires editing the YAML and a redeploy. Anything outside the list is invisible to this pipeline by design.
+- **GeoLite2 accuracy.** GeoLite2-City is free, not commercial-grade. Some IPs only resolve to country level; city resolution is imprecise. The dashboard map jitters identical lat/lon by ±0.3° to keep co-located markers visible, which is honest about the source's resolution.
+- **Detector horizontal scaling.** The current detector is single-process. The PyFlink job in `streaming/flink/phishing_detector.py` is the path to multi-task parallelism, but the deployed instance is the single Python twin sized for the firehose we observe.
+- **Streamlit cache vs. live data.** Mart-backed widgets cache for 60 seconds (`@st.cache_data(ttl=60)`) and the "live stream" tab uses a 30s `st.fragment(run_every=...)`. KPI values can lag the detector by up to one cache window.
 
 ## License
 
