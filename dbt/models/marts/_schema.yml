@@ -21,6 +21,7 @@ models:
       - name: ip_address
         tests:
           - not_null
+          - unique
       - name: source
         tests:
           - accepted_values:
