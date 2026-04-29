@@ -55,6 +55,11 @@ jobs:
           MD_CATALOG: phishing_radar
           MD_DATABASE: main
         run: cd dbt && uv run dbt test --profiles-dir .
+        # Soft-fail until Phase B introduces a local DuckDB CI target. The
+        # current MotherDuck trial has expired; dbt test errors out at
+        # connection time, not because tests fail. Once the local profile
+        # lands this becomes a hard gate again.
+        continue-on-error: true
         if: env.MOTHERDUCK_TOKEN != ''
 
       - name: dbt source freshness (warn-only)
