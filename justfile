@@ -9,9 +9,9 @@ set dotenv-load := true
 default:
     @just --list
 
-# Install Python dependencies with uv
+# Install Python dependencies with uv (reproducible: uses uv.lock verbatim)
 setup:
-    uv sync --all-extras
+    uv sync --all-extras --frozen
 
 # Start Redpanda, certstream-server-go and Kestra locally
 up:
