@@ -62,3 +62,21 @@ def test_detect_handles_wildcard_prefix() -> None:
 def test_detect_ignores_empty_input() -> None:
     assert detect("") is None
     assert detect(".") is None
+
+
+def test_brand_list_is_loaded_from_yaml(tmp_path, monkeypatch) -> None:
+    """STREAMING_BRAND_LIST_PATH points the loader at an alternate YAML."""
+    from streaming.flink import brands
+
+    custom = tmp_path / "brands.yaml"
+    custom.write_text("brands:\n  acmebank: finance\n  fictionalcorp: tech\n")
+
+    monkeypatch.setenv("STREAMING_BRAND_LIST_PATH", str(custom))
+    brands.load_brands.cache_clear()
+
+    loaded = brands.load_brands()
+    assert loaded == {"acmebank": "finance", "fictionalcorp": "tech"}
+
+    # Restore the cached default for the rest of the suite.
+    brands.load_brands.cache_clear()
+    monkeypatch.delenv("STREAMING_BRAND_LIST_PATH")
