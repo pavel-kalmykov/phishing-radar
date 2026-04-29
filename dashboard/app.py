@@ -58,8 +58,8 @@ def run_query(sql: str, params: tuple | None = None) -> pd.DataFrame:
 
 
 # Cache TTL tiers so refreshes match the cadence of the underlying data:
-LIVE_TTL = 60     # streaming-derived widgets (KPIs, suspicious_certs slices)
-BATCH_TTL = 300   # slower-moving aggregates (KEV, Spamhaus, C2 marts)
+LIVE_TTL = 60  # streaming-derived widgets (KPIs, suspicious_certs slices)
+BATCH_TTL = 300  # slower-moving aggregates (KEV, Spamhaus, C2 marts)
 FILTER_TTL = 600  # filter dropdowns (brand list, top issuers)
 
 

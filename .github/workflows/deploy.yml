@@ -12,6 +12,7 @@ on:
       - 'uv.lock'
       - 'Dockerfile'
       - 'Dockerfile.kestra'
+      - 'Dockerfile.detector'
       - 'deploy/**'
       - '.github/workflows/deploy.yml'
   workflow_dispatch:
@@ -34,7 +35,7 @@ jobs:
       matrix:
         app:
           - { name: producer, config: deploy/producer/fly.toml, dockerfile: Dockerfile }
-          - { name: detector, config: deploy/detector/fly.toml, dockerfile: Dockerfile }
+          - { name: detector, config: deploy/detector/fly.toml, dockerfile: Dockerfile.detector }
           - { name: sink,     config: deploy/sink/fly.toml,     dockerfile: Dockerfile }
           - { name: kestra,   config: deploy/kestra/fly.toml,   dockerfile: Dockerfile.kestra }
     steps:

@@ -161,9 +161,7 @@ def run(mmdb_dir: str = "data/geoip") -> dict:
             log.warning("MMDB download for %s unavailable (%s); using CSV only", edition, e)
 
     pipeline = md_pipeline("ingest_maxmind")
-    load_info = pipeline.run(
-        [asn_blocks(), country_blocks(), country_locations(), city_blocks(), city_locations()]
-    )
+    load_info = pipeline.run([asn_blocks(), country_blocks(), country_locations(), city_blocks(), city_locations()])
     log.info("loaded: %s", load_info)
     return load_info
 

@@ -1,0 +1,78 @@
+# Dedicated image for the PyFlink detector. Java + the apache-flink wheel
+# (~400 MB) only ship in this image; producer / sink / dashboard keep the
+# slim image from ./Dockerfile.
+
+# Stage 1 — build the venv. apache-flink is pip-installed AFTER uv sync
+# because its transitive pyarrow<12 cap conflicts with dlt's pyarrow>=18 in
+# the locked solver. Splitting the install lets us keep the lockfile honest
+# for everything else and only relax pyarrow inside this image's venv.
+FROM python:3.11-slim AS builder
+
+WORKDIR /app
+
+RUN pip install --no-cache-dir uv
+
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev
+
+# Install apache-flink directly into the venv. uv sync does not bundle pip,
+# so we drive the install through `uv pip install --python` which targets
+# the venv explicitly. apache-beam (transitive dep of pyflink) imports
+# pkg_resources at runtime, which lives in setuptools but was removed in
+# setuptools 81; pin <81 so it stays available. --upgrade on apache-flink
+# lets the resolver downgrade pyarrow to the version apache-beam wants.
+RUN uv pip install --python /app/.venv/bin/python --no-cache-dir 'setuptools<81' wheel \
+  && uv pip install --python /app/.venv/bin/python --no-cache-dir 'apache-flink>=1.20.0,<1.21.0' --upgrade
+
+# Download the Flink Kafka connector fat-jar matching the apache-flink version.
+# PyFlink's pip wheel only ships the runtime; external connectors need their
+# uber-jar on the classpath via env.add_jars(...). flink-sql-connector-kafka
+# is the shaded fat-jar that bundles librdkafka and all transitive deps.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends curl ca-certificates \
+  && rm -rf /var/lib/apt/lists/* \
+  && mkdir -p /app/jars \
+  && curl -fsSL -o /app/jars/flink-sql-connector-kafka.jar \
+       https://repo1.maven.org/maven2/org/apache/flink/flink-sql-connector-kafka/3.4.0-1.20/flink-sql-connector-kafka-3.4.0-1.20.jar \
+  && curl -fsSL -o /app/jars/zstd-jni.jar \
+       https://repo1.maven.org/maven2/com/github/luben/zstd-jni/1.5.6-3/zstd-jni-1.5.6-3.jar
+
+
+# Stage 2 — runtime: Eclipse Temurin JRE 17 with Python 3.11 slotted in.
+# PyFlink's MiniCluster expects a JDK on PATH and JAVA_HOME set; the default
+# python:3.11-slim doesn't ship a JDK, so we layer Python on top of Temurin.
+FROM eclipse-temurin:17-jre-jammy AS runtime
+
+# Non-root user for the same reasons as Dockerfile (CVE scanners, Fly policy).
+RUN groupadd --system app \
+  && useradd --system --gid app --home-dir /app --shell /usr/sbin/nologin app
+
+# Python 3.11 (Ubuntu jammy ships 3.10 by default; deadsnakes PPA gives us 3.11).
+# The venv from stage 1 was built against /usr/local/bin/python3.11 (the path
+# inside python:3.11-slim) so we recreate that symlink here, otherwise the
+# venv's `python` shebang resolves to a missing binary.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends software-properties-common ca-certificates \
+  && add-apt-repository -y ppa:deadsnakes/ppa \
+  && apt-get update \
+  && apt-get install -y --no-install-recommends python3.11 python3.11-venv \
+  && rm -rf /var/lib/apt/lists/* \
+  && ln -sf /usr/bin/python3.11 /usr/local/bin/python3.11 \
+  && ln -sf /usr/bin/python3.11 /usr/local/bin/python3 \
+  && ln -sf /usr/bin/python3.11 /usr/local/bin/python
+
+WORKDIR /app
+
+# Copy the venv built in stage 1. Python interpreter symlinks inside the venv
+# point at /usr/bin/python3.11 which we just installed above.
+COPY --from=builder --chown=app:app /app/.venv /app/.venv
+COPY --from=builder --chown=app:app /app/jars /app/jars
+COPY --chown=app:app streaming ./streaming
+
+# JAVA_HOME is set by the temurin base image; PyFlink picks it up.
+ENV PYTHONUNBUFFERED=1
+ENV PATH="/app/.venv/bin:$PATH"
+
+USER app
+
+CMD ["python", "-m", "streaming.flink.phishing_detector"]

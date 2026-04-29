@@ -1,16 +1,23 @@
+# mypy: disable-error-code=import-not-found
 """PyFlink streaming job: phishing typosquatting detection + windowed aggregates.
 
 Reads `certstream_events` from Kafka, runs the typosquatting heuristic on each
 domain, and produces two output streams:
 
-- `suspicious_certs`: one row per flagged domain (detection details + cert context)
-- `cert_stats_1min`: per-minute tumbling-window aggregates (total certs, suspicious
-  count, top issuer CA)
+- `suspicious_certs`: one row per cert that matches at least one brand
+- `cert_stats_1min`: per-minute tumbling-window aggregates (suspicious count,
+  total count, top issuer CA)
 
-Both outputs land in Kafka. A separate sink (BigQuery Write API via dlt, or an
-external table over GCS) is responsible for persisting them to the warehouse.
+Both outputs land in Kafka. The downstream sink (`streaming.sink.kafka_to_md`)
+is responsible for landing them into MotherDuck.
 
-Run:
+The `pyflink` wheel is not in the dev `uv.lock` (its transitive
+`pyarrow<12` cap conflicts with dlt's `pyarrow>=18`), so the file-level
+mypy directive above suppresses import-not-found on the pyflink imports.
+The wheel is pip-installed inside `Dockerfile.detector` at image build time.
+
+Run locally (requires JDK 17+ and a manual `pip install apache-flink`):
+
     uv run python -m streaming.flink.phishing_detector
 """
 
@@ -19,7 +26,8 @@ from __future__ import annotations
 import json
 import logging
 import os
-from datetime import datetime
+from collections.abc import Iterator
+from datetime import UTC, datetime
 
 from pyflink.common import Time, Types, WatermarkStrategy
 from pyflink.common.serialization import SimpleStringSchema
@@ -42,9 +50,15 @@ CERTSTREAM_TOPIC = os.getenv("CERTSTREAM_TOPIC", "certstream_events")
 SUSPICIOUS_TOPIC = os.getenv("SUSPICIOUS_TOPIC", "suspicious_certs")
 STATS_TOPIC = os.getenv("STATS_TOPIC", "cert_stats_1min")
 
+# PyFlink's pip wheel ships only the runtime; the Kafka connector is a
+# separate fat-jar that Dockerfile.detector downloads to /app/jars at build
+# time. Override via FLINK_CONNECTOR_JARS_DIR for local dev.
+FLINK_JARS_DIR = os.getenv("FLINK_CONNECTOR_JARS_DIR", "/app/jars")
 
-def enrich_with_detection(raw_json: str) -> str | None:
-    """Take a certstream_events record, run detection, emit JSON for suspicious ones only."""
+
+def _enrich_with_detection(raw_json: str) -> str | None:
+    """Run typosquatting detection on a certstream event. Returns a JSON string
+    when the cert matches at least one brand, else None."""
     try:
         event = json.loads(raw_json)
     except json.JSONDecodeError:
@@ -71,10 +85,9 @@ def enrich_with_detection(raw_json: str) -> str | None:
     if not hits:
         return None
 
-    primary = event.get("primary_domain", "")
     out = {
         "seen_at": event.get("seen_at"),
-        "primary_domain": primary,
+        "primary_domain": event.get("primary_domain", ""),
         "issuer_cn": event.get("issuer_cn"),
         "issuer_o": event.get("issuer_o"),
         "not_before": event.get("not_before"),
@@ -86,12 +99,24 @@ def enrich_with_detection(raw_json: str) -> str | None:
     return json.dumps(out)
 
 
-def parse_for_stats(raw_json: str) -> tuple[str, int, int] | None:
-    """Return (issuer_cn, suspicious_flag, 1) for windowed aggregation."""
+def enrich_flat_map(raw_json: str) -> Iterator[str]:
+    """flat_map adapter: yield 0 or 1 enriched JSON strings.
+
+    Uses flat_map (not map + filter) so PyFlink's output_type stays a strict
+    STRING and we never have to serialise a None.
+    """
+    result = _enrich_with_detection(raw_json)
+    if result is not None:
+        yield result
+
+
+def stats_flat_map(raw_json: str) -> Iterator[tuple[str, int, int]]:
+    """flat_map adapter for the per-minute aggregate branch. Emits
+    (issuer_cn, suspicious_flag, 1) per parseable event."""
     try:
         event = json.loads(raw_json)
     except json.JSONDecodeError:
-        return None
+        return
 
     issuer = event.get("issuer_cn") or "(unknown)"
 
@@ -101,24 +126,88 @@ def parse_for_stats(raw_json: str) -> tuple[str, int, int] | None:
             flagged = 1
             break
 
-    return (issuer, flagged, 1)
+    yield (issuer, flagged, 1)
+
+
+def stats_to_json(t: tuple[str, int, int]) -> str:
+    return json.dumps(
+        {
+            "window_end": datetime.now(UTC).isoformat(),
+            "issuer_cn": t[0],
+            "suspicious_count": t[1],
+            "total_count": t[2],
+        }
+    )
+
+
+def _kafka_sasl_props() -> dict[str, str]:
+    """Return SASL_SSL client properties when KAFKA_SASL_MECHANISM is set, else
+    an empty dict. Mirrors what producer / sink already do via confluent-kafka,
+    but Flink's KafkaSource / KafkaSink expose the underlying KafkaConsumer /
+    KafkaProducer config through set_property() instead of named methods."""
+    mech = os.getenv("KAFKA_SASL_MECHANISM")
+    if not mech:
+        return {}
+    user = os.getenv("KAFKA_SASL_USERNAME", "")
+    pwd = os.getenv("KAFKA_SASL_PASSWORD", "")
+    # JAAS LoginModule class name. The Flink Kafka connector ships its Kafka
+    # client SHADED under org.apache.flink.kafka.shaded.* so the JAAS config
+    # must reference the shaded class, not the upstream one, otherwise the
+    # JVM raises "No LoginModule found for ScramLoginModule".
+    module = "PlainLoginModule" if mech == "PLAIN" else "ScramLoginModule"
+    pkg = "plain" if mech == "PLAIN" else "scram"
+    shaded = "org.apache.flink.kafka.shaded.org.apache.kafka.common.security"
+    jaas = f'{shaded}.{pkg}.{module} required username="{user}" password="{pwd}";'
+    return {
+        "security.protocol": "SASL_SSL",
+        "sasl.mechanism": mech,
+        "sasl.jaas.config": jaas,
+    }
 
 
 def build_pipeline() -> StreamExecutionEnvironment:
     env = StreamExecutionEnvironment.get_execution_environment()
-    env.set_parallelism(1)  # small job, single slot is fine
+    env.set_parallelism(1)  # single-slot MiniCluster on Fly; matches the firehose rate
     env.enable_checkpointing(60_000)  # 1 min checkpoints
 
+    # Register the Kafka connector fat-jar(s) on the JVM classpath. Without
+    # this, KafkaSource.builder() raises 'Could not found the Java class'.
+    from pathlib import Path
+
+    jar_dir = Path(FLINK_JARS_DIR)
+    if jar_dir.exists():
+        jar_uris = [f"file://{p}" for p in jar_dir.glob("*.jar")]
+        if jar_uris:
+            env.add_jars(*jar_uris)
+            log.info("loaded %d connector jar(s) from %s", len(jar_uris), jar_dir)
+        else:
+            log.warning("FLINK_CONNECTOR_JARS_DIR=%s exists but has no jars", jar_dir)
+    else:
+        log.warning("FLINK_CONNECTOR_JARS_DIR=%s does not exist", jar_dir)
+
     # --- Source: certstream_events ---
-    source = (
+    # Group ID is timestamped so each redeploy starts as a fresh consumer
+    # group; the older "phishing-detector" group accumulated committed
+    # offsets across the iteration churn and the source ended up sitting
+    # idle on a stale offset.
+    import time as _time
+
+    group_id = f"phishing-detector-{int(_time.time())}"
+    sasl = _kafka_sasl_props()
+    source_builder = (
         KafkaSource.builder()
         .set_bootstrap_servers(KAFKA_BOOTSTRAP)
         .set_topics(CERTSTREAM_TOPIC)
-        .set_group_id("phishing-detector")
+        .set_group_id(group_id)
         .set_starting_offsets(KafkaOffsetsInitializer.latest())
         .set_value_only_deserializer(SimpleStringSchema())
-        .build()
     )
+    for k, v in sasl.items():
+        source_builder = source_builder.set_property(k, v)
+    # Belt-and-braces: if for any reason the offset cannot be read, default
+    # to the latest. Avoids replaying the entire firehose on every redeploy.
+    source_builder = source_builder.set_property("auto.offset.reset", "latest")
+    source = source_builder.build()
 
     raw = env.from_source(
         source,
@@ -127,9 +216,8 @@ def build_pipeline() -> StreamExecutionEnvironment:
     )
 
     # --- Branch 1: suspicious-cert sink ---
-    suspicious = raw.map(enrich_with_detection, output_type=Types.STRING()).filter(lambda x: x is not None)
-
-    suspicious_sink = (
+    suspicious = raw.flat_map(enrich_flat_map, output_type=Types.STRING())
+    suspicious_sink_builder = (
         KafkaSink.builder()
         .set_bootstrap_servers(KAFKA_BOOTSTRAP)
         .set_record_serializer(
@@ -138,31 +226,21 @@ def build_pipeline() -> StreamExecutionEnvironment:
             .set_value_serialization_schema(SimpleStringSchema())
             .build()
         )
-        .build()
     )
-    suspicious.sink_to(suspicious_sink)
+    for k, v in sasl.items():
+        suspicious_sink_builder = suspicious_sink_builder.set_property(k, v)
+    suspicious.sink_to(suspicious_sink_builder.build())
 
     # --- Branch 2: per-minute aggregates grouped by issuer CA ---
     stats_stream = (
-        raw.map(parse_for_stats, output_type=Types.TUPLE([Types.STRING(), Types.INT(), Types.INT()]))
-        .filter(lambda t: t is not None)
+        raw.flat_map(stats_flat_map, output_type=Types.TUPLE([Types.STRING(), Types.INT(), Types.INT()]))
         .key_by(lambda t: t[0])
         .window(TumblingEventTimeWindows.of(Time.minutes(1)))
         .reduce(lambda a, b: (a[0], a[1] + b[1], a[2] + b[2]))
-        .map(
-            lambda t: json.dumps(
-                {
-                    "window_end": datetime.utcnow().isoformat(),
-                    "issuer_cn": t[0],
-                    "suspicious_count": t[1],
-                    "total_count": t[2],
-                }
-            ),
-            output_type=Types.STRING(),
-        )
+        .map(stats_to_json, output_type=Types.STRING())
     )
 
-    stats_sink = (
+    stats_sink_builder = (
         KafkaSink.builder()
         .set_bootstrap_servers(KAFKA_BOOTSTRAP)
         .set_record_serializer(
@@ -171,16 +249,22 @@ def build_pipeline() -> StreamExecutionEnvironment:
             .set_value_serialization_schema(SimpleStringSchema())
             .build()
         )
-        .build()
     )
-    stats_stream.sink_to(stats_sink)
+    for k, v in sasl.items():
+        stats_sink_builder = stats_sink_builder.set_property(k, v)
+    stats_stream.sink_to(stats_sink_builder.build())
 
     return env
 
 
 def main() -> None:
     env = build_pipeline()
-    log.info("starting Flink job: %s -> {%s, %s}", CERTSTREAM_TOPIC, SUSPICIOUS_TOPIC, STATS_TOPIC)
+    log.info(
+        "starting Flink job: %s -> {%s, %s}",
+        CERTSTREAM_TOPIC,
+        SUSPICIOUS_TOPIC,
+        STATS_TOPIC,
+    )
     env.execute("phishing-radar-detector")
 
 

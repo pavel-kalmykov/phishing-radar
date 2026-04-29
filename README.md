@@ -31,7 +31,7 @@ flowchart LR
     subgraph fly[Fly.io apps always-on]
         CS[certstream-server-go]
         PROD[Python producer]
-        DET[Python detector<br/>typosquatting + 1 min windows]
+        DET[PyFlink detector<br/>typosquatting + 1 min windows]
         SINK[Kafka to MotherDuck sink]
         KES[Kestra orchestrator]
     end
@@ -65,8 +65,7 @@ flowchart LR
 | Layer | Tool | Where it runs |
 |---|---|---|
 | Stream broker | Redpanda Cloud (serverless) | AWS eu-central-1 |
-| Stream processing | Python (Kafka consumer + producer with 1-min tumbling windows) | Fly.io |
-| PyFlink reference job | `apache-flink` Table API | shipped in `streaming/flink/phishing_detector.py`; Python detector is the working twin |
+| Stream processing | PyFlink DataStream (`KafkaSource` + 1-min tumbling event-time windows + `KafkaSink`, embedded MiniCluster) | Fly.io (`phishing-radar-detector`, 1 GB) |
 | Batch ingestion | `dlt` | Fly.io (Kestra tasks) |
 | Orchestration | Kestra | Fly.io |
 | Warehouse | MotherDuck (DuckDB SaaS) | AWS eu-central-1 |
@@ -91,7 +90,7 @@ flowchart LR
 
 | Service | Tier | Role |
 |---|---|---|
-| Fly.io | 5 machines (4x shared-cpu-1x@256MB + 1x@768MB for Kestra) | Always-on producer, detector, sink, CT stream aggregator, Kestra |
+| Fly.io | 5 machines (3x shared-cpu-1x@256MB for producer / certstream / sink-512MB; 1x shared-cpu-1x@1024MB for the PyFlink detector; 1x@1024MB for Kestra) | Always-on producer, detector, sink, CT stream aggregator, Kestra |
 | Redpanda Cloud | Serverless free cluster | Kafka broker + 3 topics |
 | MotherDuck | Free tier (10 GB) | Warehouse |
 | Streamlit Cloud | Free tier | Dashboard hosting |
@@ -265,7 +264,7 @@ Every widget reads from pre-aggregated marts (`mart_dashboard_kpis`, `mart_dashb
 ├── kestra/flows/             # Kestra flow definitions (YAML)
 ├── streaming/
 │   ├── producer/             # CertStream -> Kafka
-│   ├── flink/                # detection logic + PyFlink reference job + Python twin
+│   ├── flink/                # PyFlink job (deployed) + detection logic + no-Java fallback
 │   └── sink/                 # Kafka -> MotherDuck
 ├── tests/                    # pytest suite
 ├── Dockerfile                # single image for all Python services
@@ -294,7 +293,7 @@ These are intentional trade-offs, not bugs. The portfolio version of the project
 - **Single-instance services.** Each Fly app runs one machine. No leader election, no HA. Recovery depends on Fly's restart policy and on the auto-restart health check that detects consumer freezes. A region outage takes the pipeline down until a manual fly redeploy.
 - **Brand allowlist is the detection scope.** The detector only flags impersonation against brands declared in the configuration (`STREAMING_BRAND_LIST_PATH`). Adding a brand requires editing the YAML and a redeploy. Anything outside the list is invisible to this pipeline by design.
 - **GeoLite2 accuracy.** GeoLite2-City is free, not commercial-grade. Some IPs only resolve to country level; city resolution is imprecise. The dashboard map jitters identical lat/lon by ±0.3° to keep co-located markers visible, which is honest about the source's resolution.
-- **Detector horizontal scaling.** The current detector is single-process. The PyFlink job in `streaming/flink/phishing_detector.py` is the path to multi-task parallelism, but the deployed instance is the single Python twin sized for the firehose we observe.
+- **Detector horizontal scaling.** The deployed detector runs PyFlink with `parallelism=1` against an embedded MiniCluster sized for the firehose we observe. Going beyond a single TaskManager slot would require splitting the JobManager and the TaskManagers into separate Fly machines, which is an architectural change rather than a config tweak.
 - **Streamlit cache vs. live data.** TTLs are tiered to match the cadence of each source: streaming-derived widgets (KPIs, suspicious-cert slices) cache for 60 s, slower-moving aggregates (KEV, Spamhaus, C2) cache for 5 minutes, and filter dropdowns cache for 10 minutes. The "live stream" tab adds an `st.fragment(run_every="30s")` on top so it re-queries every half minute when toggled. KPI values can therefore lag the detector by up to one cache window.
 
 ## License
