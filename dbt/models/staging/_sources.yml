@@ -69,9 +69,3 @@ sources:
         freshness:
           warn_after: {count: 30, period: minute}
           error_after: {count: 4, period: hour}
-      - name: raw_certstream_events
-        description: Raw CertStream events (landed from Kafka topic `certstream_events`)
-        loaded_at_field: received_at
-        freshness:
-          warn_after: {count: 30, period: minute}
-          error_after: {count: 4, period: hour}

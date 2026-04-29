@@ -47,7 +47,7 @@ flowchart LR
     PROD -->|certstream_events| RP
     RP --> DET
     DET -->|suspicious_certs<br/>cert_stats_1min| RP
-    RP --> SINK
+    RP -->|suspicious_certs<br/>cert_stats_1min| SINK
     SINK --> MD
 
     KEV --> KES
