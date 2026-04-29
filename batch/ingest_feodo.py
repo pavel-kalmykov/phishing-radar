@@ -13,9 +13,8 @@ import logging
 from collections.abc import Iterator
 
 import dlt
-import requests
 
-from batch.common import md_pipeline
+from batch.common import http_session, md_pipeline
 
 log = logging.getLogger("ingest-feodo")
 
@@ -25,7 +24,7 @@ FEODO_URL = "https://feodotracker.abuse.ch/downloads/ipblocklist.json"
 @dlt.resource(name="feodo_c2", write_disposition="replace")
 def feodo_c2_resource() -> Iterator[dict]:
     log.info("fetching %s", FEODO_URL)
-    resp = requests.get(FEODO_URL, timeout=60)
+    resp = http_session().get(FEODO_URL, timeout=60)
     resp.raise_for_status()
     entries = resp.json()
 

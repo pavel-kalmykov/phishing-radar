@@ -49,11 +49,18 @@ def get_conn() -> duckdb.DuckDBPyConnection:
     return duckdb.connect(f"md:{MD_CATALOG}?motherduck_token={token}")
 
 
-@st.cache_data(ttl=300)
 def run_query(sql: str, params: tuple | None = None) -> pd.DataFrame:
+    """Plain executor. Caching is the caller's responsibility because TTL
+    depends on what the query reads (streaming vs batch vs filter list)."""
     if params:
         return get_conn().execute(sql, params).df()
     return get_conn().execute(sql).df()
+
+
+# Cache TTL tiers so refreshes match the cadence of the underlying data:
+LIVE_TTL = 60  # streaming-derived widgets (KPIs, suspicious_certs slices)
+BATCH_TTL = 300  # slower-moving aggregates (KEV, Spamhaus, C2 marts)
+FILTER_TTL = 600  # filter dropdowns (brand list, top issuers)
 
 
 # =============================================================================
@@ -426,12 +433,12 @@ def malware_tooltip(family: str | None) -> str:
 # global filter bar.
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=LIVE_TTL)
 def q_kpis() -> dict[str, Any]:
     return run_query(f"select * from {MD_DATABASE}.mart_dashboard_kpis").iloc[0].to_dict()
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=BATCH_TTL)
 def q_c2_by_country() -> pd.DataFrame:
     # Join back to mart_c2_active so we surface the full country name in the
     # legend rather than the 2-letter ISO code the aggregate mart keeps.
@@ -446,7 +453,7 @@ def q_c2_by_country() -> pd.DataFrame:
     """)
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=BATCH_TTL)
 def q_c2_active_rows() -> pd.DataFrame:
     return run_query(f"""
         select ip_address, port, malware_family, country, country_name,
@@ -457,7 +464,7 @@ def q_c2_active_rows() -> pd.DataFrame:
     """)
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=BATCH_TTL)
 def q_c2_by_malware() -> pd.DataFrame:
     return run_query(f"""
         select malware_family, count(*) as active_c2
@@ -467,17 +474,17 @@ def q_c2_by_malware() -> pd.DataFrame:
     """)
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=BATCH_TTL)
 def q_kev_monthly() -> pd.DataFrame:
     return run_query(f"select * from {MD_DATABASE}.mart_dashboard_kev_monthly")
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=BATCH_TTL)
 def q_kev_vendors() -> pd.DataFrame:
     return run_query(f"select * from {MD_DATABASE}.mart_dashboard_kev_vendors")
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=BATCH_TTL)
 def q_spamhaus_buckets() -> pd.DataFrame:
     return run_query(f"select * from {MD_DATABASE}.mart_spamhaus_by_country")
 
@@ -560,7 +567,7 @@ def q_top_issuers(since: datetime, until: datetime) -> pd.DataFrame:
     )
 
 
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=FILTER_TTL)
 def q_filter_options() -> dict[str, list[str]]:
     brands = run_query("""
         select distinct brand from mart_top_impersonated_brands

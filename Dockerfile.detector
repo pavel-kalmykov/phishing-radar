@@ -1,0 +1,60 @@
+# Dedicated image for the PyFlink detector. Java + the apache-flink wheel
+# (~400 MB) only ship in this image; producer / sink / dashboard keep the
+# slim image from ./Dockerfile.
+
+# Stage 1 — build the venv. apache-flink is pip-installed AFTER uv sync
+# because its transitive pyarrow<12 cap conflicts with dlt's pyarrow>=18 in
+# the locked solver. Splitting the install lets us keep the lockfile honest
+# for everything else and only relax pyarrow inside this image's venv.
+FROM python:3.11-slim AS builder
+
+WORKDIR /app
+
+RUN pip install --no-cache-dir uv
+
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev
+
+# Install apache-flink directly into the venv. --upgrade so pip resolves the
+# pyarrow downgrade required by apache-beam (a transitive dep of pyflink);
+# the rest of the venv stays on whatever uv resolved.
+RUN /app/.venv/bin/pip install --no-cache-dir 'apache-flink>=1.20.0,<1.21.0' --upgrade
+
+
+# Stage 2 — runtime: Eclipse Temurin JRE 17 with Python 3.11 slotted in.
+# PyFlink's MiniCluster expects a JDK on PATH and JAVA_HOME set; the default
+# python:3.11-slim doesn't ship a JDK, so we layer Python on top of Temurin.
+FROM eclipse-temurin:17-jre-jammy AS runtime
+
+# Non-root user for the same reasons as Dockerfile (CVE scanners, Fly policy).
+RUN groupadd --system app \
+  && useradd --system --gid app --home-dir /app --shell /usr/sbin/nologin app
+
+# Python 3.11 (Ubuntu jammy ships 3.10 by default; deadsnakes PPA gives us 3.11).
+# The venv from stage 1 was built against /usr/local/bin/python3.11 (the path
+# inside python:3.11-slim) so we recreate that symlink here, otherwise the
+# venv's `python` shebang resolves to a missing binary.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends software-properties-common ca-certificates \
+  && add-apt-repository -y ppa:deadsnakes/ppa \
+  && apt-get update \
+  && apt-get install -y --no-install-recommends python3.11 python3.11-venv \
+  && rm -rf /var/lib/apt/lists/* \
+  && ln -sf /usr/bin/python3.11 /usr/local/bin/python3.11 \
+  && ln -sf /usr/bin/python3.11 /usr/local/bin/python3 \
+  && ln -sf /usr/bin/python3.11 /usr/local/bin/python
+
+WORKDIR /app
+
+# Copy the venv built in stage 1. Python interpreter symlinks inside the venv
+# point at /usr/bin/python3.11 which we just installed above.
+COPY --from=builder --chown=app:app /app/.venv /app/.venv
+COPY --chown=app:app streaming ./streaming
+
+# JAVA_HOME is set by the temurin base image; PyFlink picks it up.
+ENV PYTHONUNBUFFERED=1
+ENV PATH="/app/.venv/bin:$PATH"
+
+USER app
+
+CMD ["python", "-m", "streaming.flink.phishing_detector"]

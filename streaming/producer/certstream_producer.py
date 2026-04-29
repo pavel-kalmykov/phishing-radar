@@ -96,7 +96,18 @@ class CertStreamProducer:
             "linger.ms": 50,
             "batch.size": 65536,
             "compression.type": "zstd",
+            # End-to-end guarantees:
+            #   acks=all              => leader waits for all in-sync replicas
+            #   enable.idempotence    => librdkafka dedups on broker-side retries
+            #                            so a transient network blip cannot
+            #                            produce duplicate certs on the topic
+            # The other parameters (max.in.flight=5, retries, delivery.timeout)
+            # are the documented requirements for idempotence on librdkafka.
             "acks": "all",
+            "enable.idempotence": True,
+            "max.in.flight.requests.per.connection": 5,
+            "retries": 10,
+            "delivery.timeout.ms": 120000,
         }
         sasl_mech = os.getenv("KAFKA_SASL_MECHANISM")
         if sasl_mech:
@@ -183,7 +194,9 @@ class CertStreamProducer:
             )
         finally:
             log.info("flushing producer; sent=%d skipped=%d", self._sent, self._skipped)
-            self.producer.flush(10)
+            # 30 s gives delivery.timeout.ms enough room to retry in-flight
+            # batches once before we give up on shutdown.
+            self.producer.flush(30)
 
 
 def main() -> int:

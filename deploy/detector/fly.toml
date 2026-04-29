@@ -1,10 +1,15 @@
 # Phishing Radar: typosquatting detector.
 # Consumes `certstream_events`, flags impersonation attempts, and produces to
-# `suspicious_certs` and `cert_stats_1min`.
+# `suspicious_certs` and `cert_stats_1min`. The deployed binary is the PyFlink
+# job in streaming/flink/phishing_detector.py running an embedded MiniCluster;
+# Java + apache-flink ship inside Dockerfile.detector and need >= 1 GB RSS.
 app = "phishing-radar-detector"
 primary_region = "cdg"
 
 [build]
+  # The detector image bundles a JRE + apache-flink (~400 MB) so it lives in
+  # its own Dockerfile. Producer / sink keep using the slim ./Dockerfile.
+  dockerfile = "../../Dockerfile.detector"
 
 [env]
   CERTSTREAM_TOPIC = "certstream_events"
@@ -12,8 +17,10 @@ primary_region = "cdg"
   STATS_TOPIC = "cert_stats_1min"
 
 [[vm]]
+  # PyFlink MiniCluster + Python UDFs: JVM heap (~512 MB cap) + Py worker
+  # (~250 MB) + native + headroom. 256 MB OOM-killed; 1 GB is the floor.
   size = "shared-cpu-1x"
-  memory = "256mb"
+  memory = "1024mb"
 
 [processes]
-  app = "python -m streaming.flink.python_detector"
+  app = "python -m streaming.flink.phishing_detector"

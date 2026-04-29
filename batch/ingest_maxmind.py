@@ -21,7 +21,7 @@ from pathlib import Path
 import dlt
 import requests
 
-from batch.common import md_pipeline
+from batch.common import http_session, md_pipeline
 
 log = logging.getLogger("ingest-maxmind")
 
@@ -42,7 +42,7 @@ def _download_zip(edition: str) -> bytes:
     license_key = os.environ["MAXMIND_LICENSE_KEY"]
     url = f"{BASE_URL}?edition_id={edition}&license_key={license_key}&suffix=zip"
     log.info("fetching %s", edition)
-    resp = requests.get(url, timeout=300)
+    resp = http_session().get(url, timeout=300)
     resp.raise_for_status()
     return resp.content
 
@@ -161,9 +161,7 @@ def run(mmdb_dir: str = "data/geoip") -> dict:
             log.warning("MMDB download for %s unavailable (%s); using CSV only", edition, e)
 
     pipeline = md_pipeline("ingest_maxmind")
-    load_info = pipeline.run(
-        [asn_blocks(), country_blocks(), country_locations(), city_blocks(), city_locations()]
-    )
+    load_info = pipeline.run([asn_blocks(), country_blocks(), country_locations(), city_blocks(), city_locations()])
     log.info("loaded: %s", load_info)
     return load_info
 

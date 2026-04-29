@@ -9,9 +9,9 @@ set dotenv-load := true
 default:
     @just --list
 
-# Install Python dependencies with uv
+# Install Python dependencies with uv (reproducible: uses uv.lock verbatim)
 setup:
-    uv sync --all-extras
+    uv sync --all-extras --frozen
 
 # Start Redpanda, certstream-server-go and Kestra locally
 up:
@@ -25,8 +25,21 @@ down:
 producer:
     uv run python -m streaming.producer.certstream_producer
 
-# Run typosquatting detector (Python equivalent of the PyFlink job)
+# Run typosquatting detector. Real PyFlink job (MiniCluster); needs JDK 17+
+# and a one-off `uv pip install 'apache-flink>=1.20.0,<1.21.0'` because the
+# wheel cannot be locked alongside the rest of the project (see pyproject
+# comment: pyarrow conflict with dlt).
+#
+#     brew install openjdk@17
+#     export JAVA_HOME=$(brew --prefix openjdk@17)/libexec/openjdk.jdk/Contents/Home
+#     uv pip install 'apache-flink>=1.20.0,<1.21.0'
 detect:
+    uv run python -m streaming.flink.phishing_detector
+
+# No-Java fallback for quick local iteration on the detection logic. Same
+# input, same output, plain Python loop with confluent-kafka. Not what gets
+# deployed.
+detect-no-java:
     uv run python -m streaming.flink.python_detector
 
 # Run Kafka -> MotherDuck sink
@@ -47,6 +60,10 @@ dbt-test:
 dbt-deps:
     cd dbt && uv run dbt deps --profiles-dir .
 
+# Run dbt source freshness checks (warns when ingestion is stale)
+dbt-freshness:
+    cd dbt && uv run dbt source freshness --profiles-dir .
+
 # Launch the Streamlit dashboard on localhost:8501
 dashboard:
     uv run streamlit run dashboard/app.py
@@ -54,6 +71,17 @@ dashboard:
 # Run pytest suite
 test:
     uv run pytest -v
+
+# Memory profiling with memray. Each recipe writes memray-<service>.bin;
+# open with `uv run memray flamegraph memray-<service>.bin`.
+profile-producer:
+    uv run memray run -o memray-producer.bin -m streaming.producer.certstream_producer
+
+profile-detector:
+    uv run memray run -o memray-detector.bin -m streaming.flink.python_detector
+
+profile-sink:
+    uv run memray run -o memray-sink.bin -m streaming.sink.kafka_to_md
 
 # Lint and format check
 lint:

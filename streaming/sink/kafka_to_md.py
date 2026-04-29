@@ -25,6 +25,7 @@ import logging
 import os
 import signal
 import sys
+import threading
 import time
 from datetime import UTC, datetime
 
@@ -51,6 +52,13 @@ TOPIC_TO_TABLE = {
 
 BATCH_SIZE = int(os.getenv("SINK_BATCH_SIZE", "500"))
 FLUSH_SECONDS = float(os.getenv("SINK_FLUSH_SECONDS", "10"))
+# Watchdog: if the main loop has not advanced in this many seconds we
+# os._exit and let Fly's restart policy bring up a fresh machine. We have
+# observed librdkafka consumers frozen with the process otherwise healthy
+# (RAM steady, no crash, no logs); the watchdog turns that silent failure
+# into a deterministic restart.
+FREEZE_THRESHOLD_SECONDS = float(os.getenv("SINK_FREEZE_THRESHOLD_SECONDS", "600"))
+WATCHDOG_INTERVAL_SECONDS = 30.0
 
 
 def _connect() -> duckdb.DuckDBPyConnection:
@@ -75,6 +83,15 @@ def _build_consumer() -> Consumer:
         "group.id": "phishing-radar-md-sink",
         "auto.offset.reset": "earliest",
         "enable.auto.commit": "true",
+        # Fair share across the three subscribed topics. Default
+        # fetch.max.bytes is ~50 MB which lets librdkafka return one
+        # full fetch entirely from the certstream_events backlog while
+        # suspicious_certs and cert_stats_1min wait their turn. Capping
+        # the per-fetch budget at 4 MB forces librdkafka to rotate between
+        # topics on every poll cycle, so the lower-volume topics keep
+        # making forward progress while the firehose backlog drains.
+        "fetch.max.bytes": "4194304",
+        "max.partition.fetch.bytes": "1048576",
     }
     if KAFKA_SASL_MECH:
         config["security.protocol"] = "SASL_SSL"
@@ -96,12 +113,35 @@ def main() -> int:
     total_inserted = 0
     stop = False
 
+    # Heartbeat updated by the main loop on every iteration. The watchdog
+    # thread reads it to decide whether the loop is alive.
+    last_progress_at = time.monotonic()
+
     def shutdown(*_: object) -> None:
         nonlocal stop
         stop = True
 
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)
+
+    def watchdog() -> None:
+        """Daemon thread. If the main loop hasn't advanced in
+        FREEZE_THRESHOLD_SECONDS, exit hard so Fly restarts the machine."""
+        while not stop:
+            time.sleep(WATCHDOG_INTERVAL_SECONDS)
+            stalled_for = time.monotonic() - last_progress_at
+            if stalled_for > FREEZE_THRESHOLD_SECONDS:
+                log.error(
+                    "watchdog: no main-loop progress for %.0fs (threshold=%.0fs); exiting for restart",
+                    stalled_for,
+                    FREEZE_THRESHOLD_SECONDS,
+                )
+                # _exit bypasses atexit hooks and finally blocks. We want a
+                # fast, deterministic exit; whatever was holding the loop
+                # might also block normal shutdown.
+                os._exit(1)
+
+    threading.Thread(target=watchdog, daemon=True, name="sink-watchdog").start()
 
     def flush() -> None:
         nonlocal total_inserted
@@ -118,6 +158,7 @@ def main() -> int:
     try:
         while not stop:
             msg = consumer.poll(1.0)
+            last_progress_at = time.monotonic()  # poll returned, loop is alive
             if msg is None:
                 if time.monotonic() - last_flush >= FLUSH_SECONDS:
                     flush()
