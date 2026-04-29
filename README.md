@@ -243,6 +243,19 @@ Every widget reads from pre-aggregated marts (`mart_dashboard_kpis`, `mart_dashb
 - Detector design note: `docs/detection_alternatives.md` explains why we moved from Levenshtein to Damerau-Levenshtein + Jaro-Winkler and why MinHash was considered then dropped for this workload.
 - CI workflow at `.github/workflows/ci.yml`.
 
+## Known limitations
+
+These are intentional trade-offs, not bugs. The portfolio version of the project keeps the architecture honest about what it does and does not guarantee.
+
+- **At-least-once delivery, not exactly-once.** The Kafka producer is configured with `acks=all` and idempotence, but the sink commits Kafka offsets after a MotherDuck flush. If the sink is killed between flush and commit, the next run replays the last batch and dedup happens at the mart layer (`select distinct ...`). Acceptable for analytics use; not safe for billing.
+- **Detection latency floor.** The detector uses 1-minute tumbling windows to keep state bounded and emit deterministic stats. In practice a suspicious cert appears in the dashboard 60 to 120 seconds after the CA published it. That is "near real-time"; it is not sub-second.
+- **CT firehose loss.** We rely on `certstream-server-go` as the upstream WebSocket aggregator. If the producer disconnects (keepalive timeout, transient network), events emitted during the gap are not replayed. Reconnect logic is in place; replay is not.
+- **Single-instance services.** Each Fly app runs one machine. No leader election, no HA. Recovery depends on Fly's restart policy and on the auto-restart health check that detects consumer freezes. A region outage takes the pipeline down until a manual fly redeploy.
+- **Brand allowlist is the detection scope.** The detector only flags impersonation against brands declared in the configuration (`STREAMING_BRAND_LIST_PATH`). Adding a brand requires editing the YAML and a redeploy. Anything outside the list is invisible to this pipeline by design.
+- **GeoLite2 accuracy.** GeoLite2-City is free, not commercial-grade. Some IPs only resolve to country level; city resolution is imprecise. The dashboard map jitters identical lat/lon by ±0.3° to keep co-located markers visible, which is honest about the source's resolution.
+- **Detector horizontal scaling.** The current detector is single-process. The PyFlink job in `streaming/flink/phishing_detector.py` is the path to multi-task parallelism, but the deployed instance is the single Python twin sized for the firehose we observe.
+- **Streamlit cache vs. live data.** Mart-backed widgets cache for 60 seconds (`@st.cache_data(ttl=60)`) and the "live stream" tab uses a 30s `st.fragment(run_every=...)`. KPI values can lag the detector by up to one cache window.
+
 ## License
 
 MIT.
