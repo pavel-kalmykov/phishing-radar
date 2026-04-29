@@ -1,16 +1,23 @@
+# mypy: disable-error-code=import-not-found
 """PyFlink streaming job: phishing typosquatting detection + windowed aggregates.
 
 Reads `certstream_events` from Kafka, runs the typosquatting heuristic on each
 domain, and produces two output streams:
 
-- `suspicious_certs`: one row per flagged domain (detection details + cert context)
-- `cert_stats_1min`: per-minute tumbling-window aggregates (total certs, suspicious
-  count, top issuer CA)
+- `suspicious_certs`: one row per cert that matches at least one brand
+- `cert_stats_1min`: per-minute tumbling-window aggregates (suspicious count,
+  total count, top issuer CA)
 
-Both outputs land in Kafka. A separate sink (BigQuery Write API via dlt, or an
-external table over GCS) is responsible for persisting them to the warehouse.
+Both outputs land in Kafka. The downstream sink (`streaming.sink.kafka_to_md`)
+is responsible for landing them into MotherDuck.
 
-Run:
+The `pyflink` wheel is not in the dev `uv.lock` (its transitive
+`pyarrow<12` cap conflicts with dlt's `pyarrow>=18`), so the file-level
+mypy directive above suppresses import-not-found on the pyflink imports.
+The wheel is pip-installed inside `Dockerfile.detector` at image build time.
+
+Run locally (requires JDK 17+ and a manual `pip install apache-flink`):
+
     uv run python -m streaming.flink.phishing_detector
 """
 
@@ -19,7 +26,8 @@ from __future__ import annotations
 import json
 import logging
 import os
-from datetime import datetime
+from collections.abc import Iterator
+from datetime import UTC, datetime
 
 from pyflink.common import Time, Types, WatermarkStrategy
 from pyflink.common.serialization import SimpleStringSchema
@@ -43,8 +51,9 @@ SUSPICIOUS_TOPIC = os.getenv("SUSPICIOUS_TOPIC", "suspicious_certs")
 STATS_TOPIC = os.getenv("STATS_TOPIC", "cert_stats_1min")
 
 
-def enrich_with_detection(raw_json: str) -> str | None:
-    """Take a certstream_events record, run detection, emit JSON for suspicious ones only."""
+def _enrich_with_detection(raw_json: str) -> str | None:
+    """Run typosquatting detection on a certstream event. Returns a JSON string
+    when the cert matches at least one brand, else None."""
     try:
         event = json.loads(raw_json)
     except json.JSONDecodeError:
@@ -71,10 +80,9 @@ def enrich_with_detection(raw_json: str) -> str | None:
     if not hits:
         return None
 
-    primary = event.get("primary_domain", "")
     out = {
         "seen_at": event.get("seen_at"),
-        "primary_domain": primary,
+        "primary_domain": event.get("primary_domain", ""),
         "issuer_cn": event.get("issuer_cn"),
         "issuer_o": event.get("issuer_o"),
         "not_before": event.get("not_before"),
@@ -86,12 +94,24 @@ def enrich_with_detection(raw_json: str) -> str | None:
     return json.dumps(out)
 
 
-def parse_for_stats(raw_json: str) -> tuple[str, int, int] | None:
-    """Return (issuer_cn, suspicious_flag, 1) for windowed aggregation."""
+def enrich_flat_map(raw_json: str) -> Iterator[str]:
+    """flat_map adapter: yield 0 or 1 enriched JSON strings.
+
+    Uses flat_map (not map + filter) so PyFlink's output_type stays a strict
+    STRING and we never have to serialise a None.
+    """
+    result = _enrich_with_detection(raw_json)
+    if result is not None:
+        yield result
+
+
+def stats_flat_map(raw_json: str) -> Iterator[tuple[str, int, int]]:
+    """flat_map adapter for the per-minute aggregate branch. Emits
+    (issuer_cn, suspicious_flag, 1) per parseable event."""
     try:
         event = json.loads(raw_json)
     except json.JSONDecodeError:
-        return None
+        return
 
     issuer = event.get("issuer_cn") or "(unknown)"
 
@@ -101,12 +121,23 @@ def parse_for_stats(raw_json: str) -> tuple[str, int, int] | None:
             flagged = 1
             break
 
-    return (issuer, flagged, 1)
+    yield (issuer, flagged, 1)
+
+
+def stats_to_json(t: tuple[str, int, int]) -> str:
+    return json.dumps(
+        {
+            "window_end": datetime.now(UTC).isoformat(),
+            "issuer_cn": t[0],
+            "suspicious_count": t[1],
+            "total_count": t[2],
+        }
+    )
 
 
 def build_pipeline() -> StreamExecutionEnvironment:
     env = StreamExecutionEnvironment.get_execution_environment()
-    env.set_parallelism(1)  # small job, single slot is fine
+    env.set_parallelism(1)  # single-slot MiniCluster on Fly; matches the firehose rate
     env.enable_checkpointing(60_000)  # 1 min checkpoints
 
     # --- Source: certstream_events ---
@@ -127,8 +158,7 @@ def build_pipeline() -> StreamExecutionEnvironment:
     )
 
     # --- Branch 1: suspicious-cert sink ---
-    suspicious = raw.map(enrich_with_detection, output_type=Types.STRING()).filter(lambda x: x is not None)
-
+    suspicious = raw.flat_map(enrich_flat_map, output_type=Types.STRING())
     suspicious_sink = (
         KafkaSink.builder()
         .set_bootstrap_servers(KAFKA_BOOTSTRAP)
@@ -144,22 +174,11 @@ def build_pipeline() -> StreamExecutionEnvironment:
 
     # --- Branch 2: per-minute aggregates grouped by issuer CA ---
     stats_stream = (
-        raw.map(parse_for_stats, output_type=Types.TUPLE([Types.STRING(), Types.INT(), Types.INT()]))
-        .filter(lambda t: t is not None)
+        raw.flat_map(stats_flat_map, output_type=Types.TUPLE([Types.STRING(), Types.INT(), Types.INT()]))
         .key_by(lambda t: t[0])
         .window(TumblingEventTimeWindows.of(Time.minutes(1)))
         .reduce(lambda a, b: (a[0], a[1] + b[1], a[2] + b[2]))
-        .map(
-            lambda t: json.dumps(
-                {
-                    "window_end": datetime.utcnow().isoformat(),
-                    "issuer_cn": t[0],
-                    "suspicious_count": t[1],
-                    "total_count": t[2],
-                }
-            ),
-            output_type=Types.STRING(),
-        )
+        .map(stats_to_json, output_type=Types.STRING())
     )
 
     stats_sink = (
@@ -180,7 +199,12 @@ def build_pipeline() -> StreamExecutionEnvironment:
 
 def main() -> None:
     env = build_pipeline()
-    log.info("starting Flink job: %s -> {%s, %s}", CERTSTREAM_TOPIC, SUSPICIOUS_TOPIC, STATS_TOPIC)
+    log.info(
+        "starting Flink job: %s -> {%s, %s}",
+        CERTSTREAM_TOPIC,
+        SUSPICIOUS_TOPIC,
+        STATS_TOPIC,
+    )
     env.execute("phishing-radar-detector")
 
 

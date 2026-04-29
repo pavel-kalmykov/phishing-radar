@@ -33,6 +33,12 @@ dev = [
     "dbt-core>=1.9.0",
     "dbt-duckdb>=1.9.0",
 ]
+# apache-flink is NOT declared here even though streaming/flink/phishing_detector.py
+# imports it. The wheel pins pyarrow<12 (transitively, via apache-beam) which
+# conflicts irreconcilably with dlt[motherduck]'s pyarrow>=18 requirement.
+# Instead, Dockerfile.detector pip-installs apache-flink into the venv at
+# build time, after `uv sync`. The detector image is the only place that
+# actually needs the wheel; producer / sink / dashboard never import pyflink.
 
 [tool.ruff]
 line-length = 120

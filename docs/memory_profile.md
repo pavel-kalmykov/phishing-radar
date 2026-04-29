@@ -12,7 +12,7 @@ traffic.
 |---|---|---|---|---|
 | `phishing-radar-certstream` (Go, certstream-server-go) | 256 MB | 197 MB | 77 % | Tight. Tuning via `GOMEMLIMIT` only; `GOGC` left at default. |
 | `phishing-radar-producer` (Python + confluent-kafka) | 256 MB | 118 MB | 46 % | Comfortable. |
-| `phishing-radar-detector` (Python + rapidfuzz) | 256 MB | 108 MB | 42 % | Comfortable. **Will need 1 GB+** if migrated to PyFlink (JVM + Python). |
+| `phishing-radar-detector` (PyFlink MiniCluster + Python UDFs) | 1024 MB | not yet measured post-migration | n/a | JVM heap caps at ~512 MB; Python worker ~250 MB; rest is native + headroom. |
 | `phishing-radar-sink` (Python + duckdb + confluent-kafka) | 512 MB | 230 MB | 45 % | Bumped from 256 MB after early OOMs at first Kafka fetch. |
 | `phishing-radar-kestra` (JVM, Kestra standalone) | 1024 MB | 645 MB | 63 % | `JAVA_OPTS` caps the JVM at 768 MB. |
 
@@ -42,7 +42,7 @@ Replace the `-m` target to profile a different service:
 | Service | `uv run memray run -m ...` |
 |---|---|
 | Producer | `streaming.producer.certstream_producer` |
-| Detector (Python twin) | `streaming.flink.python_detector` |
+| Detector (no-Java fallback) | `streaming.flink.python_detector` |
 | Sink | `streaming.sink.kafka_to_md` |
 | Batch ingester | `batch.ingest_cisa_kev` (or any other) |
 

@@ -25,8 +25,21 @@ down:
 producer:
     uv run python -m streaming.producer.certstream_producer
 
-# Run typosquatting detector (Python equivalent of the PyFlink job)
+# Run typosquatting detector. Real PyFlink job (MiniCluster); needs JDK 17+
+# and a one-off `uv pip install 'apache-flink>=1.20.0,<1.21.0'` because the
+# wheel cannot be locked alongside the rest of the project (see pyproject
+# comment: pyarrow conflict with dlt).
+#
+#     brew install openjdk@17
+#     export JAVA_HOME=$(brew --prefix openjdk@17)/libexec/openjdk.jdk/Contents/Home
+#     uv pip install 'apache-flink>=1.20.0,<1.21.0'
 detect:
+    uv run python -m streaming.flink.phishing_detector
+
+# No-Java fallback for quick local iteration on the detection logic. Same
+# input, same output, plain Python loop with confluent-kafka. Not what gets
+# deployed.
+detect-no-java:
     uv run python -m streaming.flink.python_detector
 
 # Run Kafka -> MotherDuck sink
