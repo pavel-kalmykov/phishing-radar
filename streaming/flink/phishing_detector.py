@@ -140,6 +140,31 @@ def stats_to_json(t: tuple[str, int, int]) -> str:
     )
 
 
+def _kafka_sasl_props() -> dict[str, str]:
+    """Return SASL_SSL client properties when KAFKA_SASL_MECHANISM is set, else
+    an empty dict. Mirrors what producer / sink already do via confluent-kafka,
+    but Flink's KafkaSource / KafkaSink expose the underlying KafkaConsumer /
+    KafkaProducer config through set_property() instead of named methods."""
+    mech = os.getenv("KAFKA_SASL_MECHANISM")
+    if not mech:
+        return {}
+    user = os.getenv("KAFKA_SASL_USERNAME", "")
+    pwd = os.getenv("KAFKA_SASL_PASSWORD", "")
+    # The JAAS module name depends on the mechanism. SCRAM-SHA-256 / 512 use
+    # ScramLoginModule; PLAIN uses PlainLoginModule.
+    module = "PlainLoginModule" if mech == "PLAIN" else "ScramLoginModule"
+    pkg = "plain" if mech == "PLAIN" else "scram"
+    jaas = (
+        f"org.apache.kafka.common.security.{pkg}.{module} required "
+        f'username="{user}" password="{pwd}";'
+    )
+    return {
+        "security.protocol": "SASL_SSL",
+        "sasl.mechanism": mech,
+        "sasl.jaas.config": jaas,
+    }
+
+
 def build_pipeline() -> StreamExecutionEnvironment:
     env = StreamExecutionEnvironment.get_execution_environment()
     env.set_parallelism(1)  # single-slot MiniCluster on Fly; matches the firehose rate
@@ -161,15 +186,18 @@ def build_pipeline() -> StreamExecutionEnvironment:
         log.warning("FLINK_CONNECTOR_JARS_DIR=%s does not exist", jar_dir)
 
     # --- Source: certstream_events ---
-    source = (
+    sasl = _kafka_sasl_props()
+    source_builder = (
         KafkaSource.builder()
         .set_bootstrap_servers(KAFKA_BOOTSTRAP)
         .set_topics(CERTSTREAM_TOPIC)
         .set_group_id("phishing-detector")
         .set_starting_offsets(KafkaOffsetsInitializer.latest())
         .set_value_only_deserializer(SimpleStringSchema())
-        .build()
     )
+    for k, v in sasl.items():
+        source_builder = source_builder.set_property(k, v)
+    source = source_builder.build()
 
     raw = env.from_source(
         source,
@@ -179,7 +207,7 @@ def build_pipeline() -> StreamExecutionEnvironment:
 
     # --- Branch 1: suspicious-cert sink ---
     suspicious = raw.flat_map(enrich_flat_map, output_type=Types.STRING())
-    suspicious_sink = (
+    suspicious_sink_builder = (
         KafkaSink.builder()
         .set_bootstrap_servers(KAFKA_BOOTSTRAP)
         .set_record_serializer(
@@ -188,9 +216,10 @@ def build_pipeline() -> StreamExecutionEnvironment:
             .set_value_serialization_schema(SimpleStringSchema())
             .build()
         )
-        .build()
     )
-    suspicious.sink_to(suspicious_sink)
+    for k, v in sasl.items():
+        suspicious_sink_builder = suspicious_sink_builder.set_property(k, v)
+    suspicious.sink_to(suspicious_sink_builder.build())
 
     # --- Branch 2: per-minute aggregates grouped by issuer CA ---
     stats_stream = (
@@ -201,7 +230,7 @@ def build_pipeline() -> StreamExecutionEnvironment:
         .map(stats_to_json, output_type=Types.STRING())
     )
 
-    stats_sink = (
+    stats_sink_builder = (
         KafkaSink.builder()
         .set_bootstrap_servers(KAFKA_BOOTSTRAP)
         .set_record_serializer(
@@ -210,9 +239,10 @@ def build_pipeline() -> StreamExecutionEnvironment:
             .set_value_serialization_schema(SimpleStringSchema())
             .build()
         )
-        .build()
     )
-    stats_stream.sink_to(stats_sink)
+    for k, v in sasl.items():
+        stats_sink_builder = stats_sink_builder.set_property(k, v)
+    stats_stream.sink_to(stats_sink_builder.build())
 
     return env
 
