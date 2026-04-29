@@ -17,11 +17,11 @@ RUN uv sync --frozen --no-dev
 
 # Install apache-flink directly into the venv. uv sync does not bundle pip,
 # so we drive the install through `uv pip install --python` which targets
-# the venv explicitly. setuptools + wheel are required because apache-beam
-# (a transitive dep of pyflink) imports pkg_resources at runtime; modern
-# python:3.11-slim no longer ships them by default. --upgrade lets the
-# resolver downgrade pyarrow to the version apache-beam wants.
-RUN uv pip install --python /app/.venv/bin/python --no-cache-dir setuptools wheel \
+# the venv explicitly. apache-beam (transitive dep of pyflink) imports
+# pkg_resources at runtime, which lives in setuptools but was removed in
+# setuptools 81; pin <81 so it stays available. --upgrade on apache-flink
+# lets the resolver downgrade pyarrow to the version apache-beam wants.
+RUN uv pip install --python /app/.venv/bin/python --no-cache-dir 'setuptools<81' wheel \
   && uv pip install --python /app/.venv/bin/python --no-cache-dir 'apache-flink>=1.20.0,<1.21.0' --upgrade
 
 
