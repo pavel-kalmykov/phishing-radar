@@ -24,6 +24,17 @@ RUN uv sync --frozen --no-dev
 RUN uv pip install --python /app/.venv/bin/python --no-cache-dir 'setuptools<81' wheel \
   && uv pip install --python /app/.venv/bin/python --no-cache-dir 'apache-flink>=1.20.0,<1.21.0' --upgrade
 
+# Download the Flink Kafka connector fat-jar matching the apache-flink version.
+# PyFlink's pip wheel only ships the runtime; external connectors need their
+# uber-jar on the classpath via env.add_jars(...). flink-sql-connector-kafka
+# is the shaded fat-jar that bundles librdkafka and all transitive deps.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends curl ca-certificates \
+  && rm -rf /var/lib/apt/lists/* \
+  && mkdir -p /app/jars \
+  && curl -fsSL -o /app/jars/flink-sql-connector-kafka.jar \
+       https://repo1.maven.org/maven2/org/apache/flink/flink-sql-connector-kafka/3.3.0-1.20/flink-sql-connector-kafka-3.3.0-1.20.jar
+
 
 # Stage 2 — runtime: Eclipse Temurin JRE 17 with Python 3.11 slotted in.
 # PyFlink's MiniCluster expects a JDK on PATH and JAVA_HOME set; the default
@@ -57,6 +68,7 @@ RUN chown app:app /app
 # Copy the venv built in stage 1. Python interpreter symlinks inside the venv
 # point at /usr/bin/python3.11 which we just installed above.
 COPY --from=builder --chown=app:app /app/.venv /app/.venv
+COPY --from=builder --chown=app:app /app/jars /app/jars
 COPY --chown=app:app streaming ./streaming
 
 # JAVA_HOME is set by the temurin base image; PyFlink picks it up.

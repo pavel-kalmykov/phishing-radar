@@ -50,6 +50,11 @@ CERTSTREAM_TOPIC = os.getenv("CERTSTREAM_TOPIC", "certstream_events")
 SUSPICIOUS_TOPIC = os.getenv("SUSPICIOUS_TOPIC", "suspicious_certs")
 STATS_TOPIC = os.getenv("STATS_TOPIC", "cert_stats_1min")
 
+# PyFlink's pip wheel ships only the runtime; the Kafka connector is a
+# separate fat-jar that Dockerfile.detector downloads to /app/jars at build
+# time. Override via FLINK_CONNECTOR_JARS_DIR for local dev.
+FLINK_JARS_DIR = os.getenv("FLINK_CONNECTOR_JARS_DIR", "/app/jars")
+
 
 def _enrich_with_detection(raw_json: str) -> str | None:
     """Run typosquatting detection on a certstream event. Returns a JSON string
@@ -139,6 +144,21 @@ def build_pipeline() -> StreamExecutionEnvironment:
     env = StreamExecutionEnvironment.get_execution_environment()
     env.set_parallelism(1)  # single-slot MiniCluster on Fly; matches the firehose rate
     env.enable_checkpointing(60_000)  # 1 min checkpoints
+
+    # Register the Kafka connector fat-jar(s) on the JVM classpath. Without
+    # this, KafkaSource.builder() raises 'Could not found the Java class'.
+    from pathlib import Path
+
+    jar_dir = Path(FLINK_JARS_DIR)
+    if jar_dir.exists():
+        jar_uris = [f"file://{p}" for p in jar_dir.glob("*.jar")]
+        if jar_uris:
+            env.add_jars(*jar_uris)
+            log.info("loaded %d connector jar(s) from %s", len(jar_uris), jar_dir)
+        else:
+            log.warning("FLINK_CONNECTOR_JARS_DIR=%s exists but has no jars", jar_dir)
+    else:
+        log.warning("FLINK_CONNECTOR_JARS_DIR=%s does not exist", jar_dir)
 
     # --- Source: certstream_events ---
     source = (
