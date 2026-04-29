@@ -18,6 +18,10 @@ RUN groupadd --system app \
   && useradd --system --gid app --home-dir /app --shell /usr/sbin/nologin app
 
 WORKDIR /app
+# WORKDIR creates /app owned by root; flip it to the runtime user so the
+# sink's DuckDB / MotherDuck client can mkdir /app/.duckdb at runtime to
+# cache the motherduck extension.
+RUN chown app:app /app
 
 COPY --from=builder --chown=app:app /app/.venv /app/.venv
 COPY --chown=app:app streaming ./streaming

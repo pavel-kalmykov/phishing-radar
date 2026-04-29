@@ -49,6 +49,10 @@ RUN apt-get update \
   && ln -sf /usr/bin/python3.11 /usr/local/bin/python
 
 WORKDIR /app
+# WORKDIR creates /app owned by root; flip it so the runtime user can mkdir
+# subdirectories at runtime (e.g. PyFlink scratch space, DuckDB extension
+# cache if anything in this image happens to use it).
+RUN chown app:app /app
 
 # Copy the venv built in stage 1. Python interpreter symlinks inside the venv
 # point at /usr/bin/python3.11 which we just installed above.
