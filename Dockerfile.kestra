@@ -1,42 +1,50 @@
-FROM kestra/kestra:v0.19.12
-
-USER root
-
-# Python 3 and uv for the batch tasks. Kestra's base is OpenJDK-21 on Debian
-# (no python). We grab the standalone uv binary instead of pip-installing it,
-# which sidesteps Debian's PEP 668 "externally managed" pip restriction.
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends python3 python3-venv git curl ca-certificates \
-  && rm -rf /var/lib/apt/lists/* \
-  && curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
+# Stage 1 — build the Python venv outside of the Kestra image so apt cache,
+# uv binary, build tools and pip never reach runtime.
+FROM python:3.11-slim AS python-builder
 
 WORKDIR /opt/phishing-radar
 
-# uv manages its own Python toolchain. By default it installs it under /root,
-# which is 700 and unreadable by the non-root `kestra` user at runtime. Point
-# the install dir to a world-readable location.
-ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends curl ca-certificates \
+  && rm -rf /var/lib/apt/lists/* \
+  && curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
 
-# Install our Python dependencies once at build time so the batch flow can
-# just run `uv run python -m batch.*` without any install step.
 COPY pyproject.toml uv.lock ./
-RUN uv sync --no-dev --frozen && uv add --frozen dbt-core dbt-duckdb
+RUN uv sync --no-dev --frozen \
+  && uv add --frozen dbt-core dbt-duckdb
 
-# Ship the batch + dbt code. Streaming code is irrelevant to Kestra.
+
+# Stage 2 — Kestra runtime with the prebuilt venv copied in.
+FROM kestra/kestra:v0.19.12 AS runtime
+
+USER root
+
+# Kestra's base is OpenJDK on Debian (no Python). The venv from stage 1 was
+# built against /usr/local/bin/python3.11 (the path inside python:3.11-slim);
+# install python3.11 from Debian and recreate the symlink so the venv's
+# python shebang resolves at runtime. git is also needed for dbt packages.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends python3 python3-venv git ca-certificates \
+  && rm -rf /var/lib/apt/lists/* \
+  && ln -sf "$(command -v python3)" /usr/local/bin/python3.11
+
+WORKDIR /opt/phishing-radar
+
+COPY --from=python-builder /opt/phishing-radar /opt/phishing-radar
+
+# Application code
 COPY batch ./batch
 COPY dbt ./dbt
 
-# Bake the Kestra flows into /app/flows so `micronaut.io.watch` picks them up
-# on boot. Flow YAML lives alongside the code in the repo.
+# Bake the Kestra flows into /app/flows so micronaut.io.watch picks them up.
 COPY kestra/flows /app/flows
-RUN chown -R kestra:kestra /app/flows
 
 ENV PATH="/opt/phishing-radar/.venv/bin:${PATH}"
 ENV PYTHONUNBUFFERED=1
 
-# Kestra's Process task runner executes commands as the `kestra` user, so the
-# venv, project dir and the uv-managed Python must be readable by that user.
-RUN chown -R kestra:kestra /opt/phishing-radar /opt/uv-python
+# Kestra's Process task runner executes commands as the kestra user, so the
+# venv and project dir must be readable by that user.
+RUN chown -R kestra:kestra /opt/phishing-radar /app/flows
 
 USER kestra
 
