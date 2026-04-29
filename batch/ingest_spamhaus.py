@@ -14,9 +14,8 @@ import re
 from collections.abc import Iterator
 
 import dlt
-import requests
 
-from batch.common import md_pipeline
+from batch.common import http_session, md_pipeline
 
 log = logging.getLogger("ingest-spamhaus")
 
@@ -30,9 +29,10 @@ LINE_RE = re.compile(r"^(?P<cidr>[\d./]+)\s*;\s*(?P<sbl>\S+)\s*$")
 
 @dlt.resource(name="spamhaus_drop", write_disposition="replace")
 def spamhaus_drop_resource() -> Iterator[dict]:
+    session = http_session()
     for list_name, url in SOURCES.items():
         log.info("fetching %s", url)
-        resp = requests.get(url, timeout=60)
+        resp = session.get(url, timeout=60)
         resp.raise_for_status()
 
         for line in resp.text.splitlines():

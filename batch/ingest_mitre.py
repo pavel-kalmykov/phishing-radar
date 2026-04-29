@@ -13,9 +13,8 @@ import logging
 from collections.abc import Iterator
 
 import dlt
-import requests
 
-from batch.common import md_pipeline
+from batch.common import http_session, md_pipeline
 
 log = logging.getLogger("ingest-mitre")
 
@@ -36,7 +35,7 @@ def _get_kill_chain(obj: dict) -> list[str]:
 @dlt.source(name="mitre_attack")
 def mitre_attack_source() -> Iterator:
     log.info("fetching %s", ATTACK_URL)
-    resp = requests.get(ATTACK_URL, timeout=120)
+    resp = http_session().get(ATTACK_URL, timeout=120)
     resp.raise_for_status()
     bundle = resp.json()
     objects = bundle.get("objects", [])
