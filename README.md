@@ -112,7 +112,7 @@ The README calls the pipeline "real-time". This section spells out what that mea
 | Broker to detector consumer poll | ms | seconds |
 | Detector tumbling window emit | up to 60 s | up to 60 s (window granularity) |
 | Sink poll + flush (`BATCH_SIZE=500`, `FLUSH_SECONDS=10`) | 1 to 10 s | 10 s (idle flush) |
-| Streamlit cache TTL | 0 to 60 s | 60 s |
+| Streamlit cache TTL (live tier) | 0 to 60 s | 60 s |
 
 Median observed latency in production: about 60 s. Floor is the detector window plus the sink flush, so anything below 30 s is not achievable without redesign.
 
@@ -294,7 +294,7 @@ These are intentional trade-offs, not bugs. The portfolio version of the project
 - **Brand allowlist is the detection scope.** The detector only flags impersonation against brands declared in the configuration (`STREAMING_BRAND_LIST_PATH`). Adding a brand requires editing the YAML and a redeploy. Anything outside the list is invisible to this pipeline by design.
 - **GeoLite2 accuracy.** GeoLite2-City is free, not commercial-grade. Some IPs only resolve to country level; city resolution is imprecise. The dashboard map jitters identical lat/lon by ±0.3° to keep co-located markers visible, which is honest about the source's resolution.
 - **Detector horizontal scaling.** The current detector is single-process. The PyFlink job in `streaming/flink/phishing_detector.py` is the path to multi-task parallelism, but the deployed instance is the single Python twin sized for the firehose we observe.
-- **Streamlit cache vs. live data.** Mart-backed widgets cache for 60 seconds (`@st.cache_data(ttl=60)`) and the "live stream" tab uses a 30s `st.fragment(run_every=...)`. KPI values can lag the detector by up to one cache window.
+- **Streamlit cache vs. live data.** TTLs are tiered to match the cadence of each source: streaming-derived widgets (KPIs, suspicious-cert slices) cache for 60 s, slower-moving aggregates (KEV, Spamhaus, C2) cache for 5 minutes, and filter dropdowns cache for 10 minutes. The "live stream" tab adds an `st.fragment(run_every="30s")` on top so it re-queries every half minute when toggled. KPI values can therefore lag the detector by up to one cache window.
 
 ## License
 
