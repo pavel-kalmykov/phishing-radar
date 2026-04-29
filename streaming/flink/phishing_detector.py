@@ -150,14 +150,14 @@ def _kafka_sasl_props() -> dict[str, str]:
         return {}
     user = os.getenv("KAFKA_SASL_USERNAME", "")
     pwd = os.getenv("KAFKA_SASL_PASSWORD", "")
-    # The JAAS module name depends on the mechanism. SCRAM-SHA-256 / 512 use
-    # ScramLoginModule; PLAIN uses PlainLoginModule.
+    # JAAS LoginModule class name. The Flink Kafka connector ships its Kafka
+    # client SHADED under org.apache.flink.kafka.shaded.* so the JAAS config
+    # must reference the shaded class, not the upstream one, otherwise the
+    # JVM raises "No LoginModule found for ScramLoginModule".
     module = "PlainLoginModule" if mech == "PLAIN" else "ScramLoginModule"
     pkg = "plain" if mech == "PLAIN" else "scram"
-    jaas = (
-        f"org.apache.kafka.common.security.{pkg}.{module} required "
-        f'username="{user}" password="{pwd}";'
-    )
+    shaded = "org.apache.flink.kafka.shaded.org.apache.kafka.common.security"
+    jaas = f'{shaded}.{pkg}.{module} required username="{user}" password="{pwd}";'
     return {
         "security.protocol": "SASL_SSL",
         "sasl.mechanism": mech,
