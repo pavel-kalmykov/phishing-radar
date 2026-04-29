@@ -12,6 +12,7 @@ on:
       - 'uv.lock'
       - 'Dockerfile'
       - 'Dockerfile.kestra'
+      - 'Dockerfile.detector'
       - 'deploy/**'
       - '.github/workflows/deploy.yml'
   workflow_dispatch:
