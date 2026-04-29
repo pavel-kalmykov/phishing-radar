@@ -98,6 +98,43 @@ flowchart LR
 
 Expected monthly cost: around 10 EUR (Kestra VM) plus 4 x ~2 EUR for the small always-on machines. Everything else is on free tiers.
 
+## Latency, throughput and backpressure
+
+The README calls the pipeline "real-time". This section spells out what that means in numbers and where the limits sit.
+
+**End-to-end latency**, from a CA publishing a certificate to it appearing in the dashboard:
+
+| Hop | Typical | Worst case |
+|---|---|---|
+| CT log entry to `certstream-server-go` | ms | seconds |
+| `certstream-server-go` to producer WebSocket | ms | seconds (reconnect window: up to 60 s) |
+| Producer batch (`linger.ms=50`, `acks=all`) | 50 to 200 ms | seconds (broker slow) |
+| Broker to detector consumer poll | ms | seconds |
+| Detector tumbling window emit | up to 60 s | up to 60 s (window granularity) |
+| Sink poll + flush (`BATCH_SIZE=500`, `FLUSH_SECONDS=10`) | 1 to 10 s | 10 s (idle flush) |
+| Streamlit cache TTL | 0 to 60 s | 60 s |
+
+Median observed latency in production: about 60 s. Floor is the detector window plus the sink flush, so anything below 30 s is not achievable without redesign.
+
+**Throughput observed**:
+
+- CT firehose: ~200 certs/s sustained, peaks to ~500 certs/s.
+- Producer to Kafka: ~1 to 2 MB/s after zstd compression, far below broker capacity.
+- Detector: ~5,000 to 20,000 certs/window evaluated, ~1,000 to 1,500 suspicious certs/min emitted at peak hours.
+- Sink to MotherDuck: 50 to 200 inserts/s during normal operation; drained 100k+ message backlogs at 1,500 rows/s.
+
+**Backpressure**:
+
+- Producer side: librdkafka holds an in-process queue (`queue.buffering.max.messages` default 100k). When the broker is slow, `produce()` blocks the asyncio task that reads the WebSocket. The upstream `certstream-server-go` then either buffers or drops on its end; we do not control that.
+- Sink side: the consumer poll has a 1 s timeout, the buffer is bounded by `SINK_BATCH_SIZE` (default 500) and flushes are time-bounded by `SINK_FLUSH_SECONDS` (default 10). If MotherDuck is slow, the consumer naturally lags behind its committed offset; offsets advance only after a successful flush, so at-least-once delivery survives a sink crash mid-batch (the next run replays).
+
+**No circuit breaker.** The detector does not shed load when input rate exceeds the rate it can fingerprint and emit. We rely on the bounded per-window state and on Kafka acting as the disk-backed buffer ahead of the consumer. If the detector falls permanently behind, the topic retains messages up to the cluster retention (24 h on the Redpanda Cloud serverless plan) and the dashboard freshness alert fires (`dbt source freshness`).
+
+**Known stress points** (already on the work list):
+
+- Sink consumer freeze: the consumer occasionally stops polling without crashing the process. The auto-restart health check ([`A13`](#known-limitations)) detects no flushes for N minutes and exits, letting Fly restart the machine.
+- Multi-topic fair-share: a single Kafka consumer subscribed to three topics is not strictly fair-share across topics in librdkafka. With a multi-million-row certstream backlog, `suspicious_certs` can lag. Mitigation: `fetch.max.partition.bytes` tuning, or split into per-topic consumers.
+
 ## Data warehouse notes (for reviewers)
 
 > [!NOTE]
