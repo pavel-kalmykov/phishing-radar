@@ -277,10 +277,11 @@ Every widget reads from pre-aggregated marts (`mart_dashboard_kpis`, `mart_dashb
 
 ## Tests and quality
 
-- `pytest` covers the typosquatting detector (19 assertions: homoglyph, Cyrillic look-alikes, Damerau-Levenshtein including transpositions, Jaro-Winkler prefix cases, legitimate domains, edge cases).
+- `pytest` covers the typosquatting detector and every batch ingester parser (26 assertions across 2 files: detector heuristics, retry/backoff session, mocked HTTP responses for cisa_kev, feodo, threatfox, spamhaus, mitre).
 - `ruff check` in CI.
 - `dbt test` runs 13 schema tests plus 1 singular test (IP format sanity).
 - Detector design note: `docs/detection_alternatives.md` explains why we moved from Levenshtein to Damerau-Levenshtein + Jaro-Winkler and why MinHash was considered then dropped for this workload.
+- Memory footprint and right-sizing rationale: `docs/memory_profile.md` (observed RSS peaks per service, how to reproduce with `memray`, why `MALLOC_ARENA_MAX` is not used).
 - CI workflow at `.github/workflows/ci.yml`.
 
 ## Known limitations

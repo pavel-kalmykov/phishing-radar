@@ -59,6 +59,17 @@ dashboard:
 test:
     uv run pytest -v
 
+# Memory profiling with memray. Each recipe writes memray-<service>.bin;
+# open with `uv run memray flamegraph memray-<service>.bin`.
+profile-producer:
+    uv run memray run -o memray-producer.bin -m streaming.producer.certstream_producer
+
+profile-detector:
+    uv run memray run -o memray-detector.bin -m streaming.flink.python_detector
+
+profile-sink:
+    uv run memray run -o memray-sink.bin -m streaming.sink.kafka_to_md
+
 # Lint and format check
 lint:
     uv run ruff check .
