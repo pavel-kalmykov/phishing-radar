@@ -13,9 +13,8 @@ import logging
 from collections.abc import Iterator
 
 import dlt
-import requests
 
-from batch.common import md_pipeline
+from batch.common import http_session, md_pipeline
 
 log = logging.getLogger("ingest-cisa-kev")
 
@@ -25,7 +24,7 @@ CISA_KEV_URL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_v
 @dlt.resource(name="cisa_kev", write_disposition="replace", primary_key="cve_id")
 def cisa_kev_resource() -> Iterator[dict]:
     log.info("fetching %s", CISA_KEV_URL)
-    resp = requests.get(CISA_KEV_URL, timeout=60)
+    resp = http_session().get(CISA_KEV_URL, timeout=60)
     resp.raise_for_status()
     payload = resp.json()
 

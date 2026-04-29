@@ -17,9 +17,8 @@ import logging
 from collections.abc import Iterator
 
 import dlt
-import requests
 
-from batch.common import md_pipeline
+from batch.common import http_session, md_pipeline
 
 log = logging.getLogger("ingest-threatfox")
 
@@ -39,7 +38,7 @@ def _split_ip_port(value: str) -> tuple[str | None, int | None]:
 @dlt.resource(name="threatfox_iocs", write_disposition="replace")
 def threatfox_iocs() -> Iterator[dict]:
     log.info("fetching %s", THREATFOX_URL)
-    resp = requests.get(THREATFOX_URL, timeout=120)
+    resp = http_session().get(THREATFOX_URL, timeout=120)
     resp.raise_for_status()
     payload = resp.json()
 
