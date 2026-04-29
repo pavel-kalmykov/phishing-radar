@@ -1,13 +1,14 @@
 # Phishing Radar: Kafka -> MotherDuck sink.
-# Reads the three streaming topics from Redpanda Cloud and lands them into
-# `phishing_radar.main.raw_*` tables in MotherDuck.
+# Reads the two detector output topics from Redpanda Cloud and lands them
+# into `phishing_radar.main.raw_*` tables in MotherDuck. The upstream
+# `certstream_events` firehose is intentionally not sunk; see the sink
+# module docstring.
 app = "phishing-radar-sink"
 primary_region = "cdg"
 
 [build]
 
 [env]
-  CERTSTREAM_TOPIC = "certstream_events"
   SUSPICIOUS_TOPIC = "suspicious_certs"
   STATS_TOPIC = "cert_stats_1min"
   MD_CATALOG = "phishing_radar"

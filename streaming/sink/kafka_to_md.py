@@ -1,11 +1,17 @@
 """Kafka topics -> MotherDuck.
 
-Consumes the three streaming topics emitted by our pipeline and lands them
-to their corresponding raw tables in the MotherDuck database:
+Consumes the two output streams emitted by the detector and lands them to
+their corresponding raw tables in the MotherDuck database:
 
-- `certstream_events`  -> `raw_certstream_events`
 - `suspicious_certs`   -> `raw_suspicious_certs`
 - `cert_stats_1min`    -> `raw_cert_stats_1min`
+
+The upstream `certstream_events` topic is intentionally NOT sunk into
+MotherDuck. Every cert in the firehose passes through the detector which
+either flags it (-> suspicious_certs) or aggregates it (-> cert_stats_1min);
+no model nor dashboard widget reads the raw firehose, so writing it to
+the warehouse is pure cost (compute + storage). Auditability stays at the
+Kafka layer (24 h retention).
 
 Each raw table has three columns: `received_at`, `key`, `payload` (JSON).
 dbt owns the parsing, so the sink stays cheap and schema-evolution friendly.
@@ -45,7 +51,6 @@ MD_DATABASE = os.getenv("MD_DATABASE", "main")
 MOTHERDUCK_TOKEN = os.environ["MOTHERDUCK_TOKEN"]
 
 TOPIC_TO_TABLE = {
-    os.getenv("CERTSTREAM_TOPIC", "certstream_events"): "raw_certstream_events",
     os.getenv("SUSPICIOUS_TOPIC", "suspicious_certs"): "raw_suspicious_certs",
     os.getenv("STATS_TOPIC", "cert_stats_1min"): "raw_cert_stats_1min",
 }
@@ -83,13 +88,10 @@ def _build_consumer() -> Consumer:
         "group.id": "phishing-radar-md-sink",
         "auto.offset.reset": "earliest",
         "enable.auto.commit": "true",
-        # Fair share across the three subscribed topics. Default
-        # fetch.max.bytes is ~50 MB which lets librdkafka return one
-        # full fetch entirely from the certstream_events backlog while
-        # suspicious_certs and cert_stats_1min wait their turn. Capping
-        # the per-fetch budget at 4 MB forces librdkafka to rotate between
-        # topics on every poll cycle, so the lower-volume topics keep
-        # making forward progress while the firehose backlog drains.
+        # Fair share across the two subscribed topics. Both are low-volume
+        # (detector outputs, not the upstream firehose), so the default
+        # fetch budget would be fine; cap it anyway at 4 MB so a sudden
+        # backlog on one topic does not starve the other.
         "fetch.max.bytes": "4194304",
         "max.partition.fetch.bytes": "1048576",
     }
