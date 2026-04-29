@@ -241,5 +241,3 @@ def test_mitre_partitions_objects_into_three_resources() -> None:
     assert tech_rows[0]["kill_chain_phases"] == ["initial-access"]
     assert soft_rows[0]["attack_id"] == "S1000"
     assert grp_rows[0]["attack_id"] == "G9999"
-
-
