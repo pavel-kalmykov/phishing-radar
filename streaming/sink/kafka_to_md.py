@@ -1,17 +1,24 @@
 """Kafka topics -> MotherDuck.
 
-Consumes the two output streams emitted by the detector and lands them to
-their corresponding raw tables in the MotherDuck database:
+Consumes the two output streams emitted by the detector and lands each one
+to its corresponding raw table in the MotherDuck database:
 
 - `suspicious_certs`   -> `raw_suspicious_certs`
 - `cert_stats_1min`    -> `raw_cert_stats_1min`
+
+Each topic is served by its own Consumer + DuckDB connection in its own
+thread. The previous design subscribed a single Consumer to all topics
+and rotated through them via `fetch.max.bytes` tuning, which is the kind
+of fair-share-by-tuning that breaks the moment one topic's volume jumps;
+the per-topic thread split makes the fair share a property of the design
+instead of a runtime knob.
 
 The upstream `certstream_events` topic is intentionally NOT sunk into
 MotherDuck. Every cert in the firehose passes through the detector which
 either flags it (-> suspicious_certs) or aggregates it (-> cert_stats_1min);
 no model nor dashboard widget reads the raw firehose, so writing it to
-the warehouse is pure cost (compute + storage). Auditability stays at the
-Kafka layer (24 h retention).
+the warehouse is pure cost (compute + storage). Auditability stays at
+the Kafka layer (24 h retention).
 
 Each raw table has three columns: `received_at`, `key`, `payload` (JSON).
 dbt owns the parsing, so the sink stays cheap and schema-evolution friendly.
@@ -57,7 +64,7 @@ TOPIC_TO_TABLE = {
 
 BATCH_SIZE = int(os.getenv("SINK_BATCH_SIZE", "500"))
 FLUSH_SECONDS = float(os.getenv("SINK_FLUSH_SECONDS", "10"))
-# Watchdog: if the main loop has not advanced in this many seconds we
+# Watchdog: if any worker thread has not advanced in this many seconds we
 # os._exit and let Fly's restart policy bring up a fresh machine. We have
 # observed librdkafka consumers frozen with the process otherwise healthy
 # (RAM steady, no crash, no logs); the watchdog turns that silent failure
@@ -65,35 +72,30 @@ FLUSH_SECONDS = float(os.getenv("SINK_FLUSH_SECONDS", "10"))
 FREEZE_THRESHOLD_SECONDS = float(os.getenv("SINK_FREEZE_THRESHOLD_SECONDS", "600"))
 WATCHDOG_INTERVAL_SECONDS = 30.0
 
+CONSUMER_GROUP_PREFIX = "phishing-radar-md-sink"
+
 
 def _connect() -> duckdb.DuckDBPyConnection:
     conn_str = f"md:{MD_CATALOG}?motherduck_token={MOTHERDUCK_TOKEN}"
     return duckdb.connect(conn_str)
 
 
-def _ensure_tables(conn: duckdb.DuckDBPyConnection) -> None:
-    for table in set(TOPIC_TO_TABLE.values()):
-        conn.execute(f"""
-            CREATE TABLE IF NOT EXISTS {table} (
-                received_at TIMESTAMP NOT NULL,
-                key VARCHAR,
-                payload JSON NOT NULL
-            )
-        """)
+def _ensure_table(conn: duckdb.DuckDBPyConnection, table: str) -> None:
+    conn.execute(f"""
+        CREATE TABLE IF NOT EXISTS {table} (
+            received_at TIMESTAMP NOT NULL,
+            key VARCHAR,
+            payload JSON NOT NULL
+        )
+    """)
 
 
-def _build_consumer() -> Consumer:
+def _build_consumer(group_id: str) -> Consumer:
     config: dict[str, str] = {
         "bootstrap.servers": KAFKA_BOOTSTRAP,
-        "group.id": "phishing-radar-md-sink",
+        "group.id": group_id,
         "auto.offset.reset": "earliest",
         "enable.auto.commit": "true",
-        # Fair share across the two subscribed topics. Both are low-volume
-        # (detector outputs, not the upstream firehose), so the default
-        # fetch budget would be fine; cap it anyway at 4 MB so a sudden
-        # backlog on one topic does not starve the other.
-        "fetch.max.bytes": "4194304",
-        "max.partition.fetch.bytes": "1048576",
     }
     if KAFKA_SASL_MECH:
         config["security.protocol"] = "SASL_SSL"
@@ -103,104 +105,123 @@ def _build_consumer() -> Consumer:
     return Consumer(config)
 
 
-def main() -> int:
-    conn = _connect()
-    _ensure_tables(conn)
+class TopicWorker(threading.Thread):
+    """One Kafka consumer + one DuckDB connection per topic.
 
-    consumer = _build_consumer()
-    consumer.subscribe(list(TOPIC_TO_TABLE))
+    Each worker owns its poll/flush cadence so a slow topic cannot stall a
+    fast one. Offsets are tracked in independent consumer groups
+    (`{prefix}-{topic}`) so re-balancing one topic does not affect the others.
+    """
 
-    buffers: dict[str, list[tuple[str, str | None, str]]] = {t: [] for t in set(TOPIC_TO_TABLE.values())}
-    last_flush = time.monotonic()
-    total_inserted = 0
-    stop = False
+    def __init__(self, topic: str, table: str, stop: threading.Event) -> None:
+        super().__init__(daemon=True, name=f"sink-{topic}")
+        self.topic = topic
+        self.table = table
+        self.stop = stop
+        self.last_progress_at = time.monotonic()
+        self.last_flush = time.monotonic()
+        self.total_inserted = 0
+        self._buffer: list[tuple[str, str | None, str]] = []
+        self._consumer = _build_consumer(group_id=f"{CONSUMER_GROUP_PREFIX}-{topic}")
+        self._consumer.subscribe([topic])
+        self._conn = _connect()
+        _ensure_table(self._conn, table)
 
-    # Heartbeat updated by the main loop on every iteration. The watchdog
-    # thread reads it to decide whether the loop is alive.
-    last_progress_at = time.monotonic()
+    def run(self) -> None:
+        log.info("[%s] worker started", self.topic)
+        try:
+            while not self.stop.is_set():
+                msg = self._consumer.poll(1.0)
+                self.last_progress_at = time.monotonic()
+                if msg is None:
+                    if time.monotonic() - self.last_flush >= FLUSH_SECONDS:
+                        self._flush(idle=True)
+                    continue
+                if msg.error():
+                    log.warning("[%s] consumer error: %s", self.topic, msg.error())
+                    continue
+                try:
+                    payload_str = msg.value().decode()
+                    json.loads(payload_str)  # validate JSON
+                except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                    log.warning("[%s] bad message: %s", self.topic, e)
+                    continue
+                self._buffer.append(
+                    (
+                        datetime.now(UTC).isoformat(),
+                        msg.key().decode() if msg.key() else None,
+                        payload_str,
+                    )
+                )
+                if len(self._buffer) >= BATCH_SIZE or time.monotonic() - self.last_flush >= FLUSH_SECONDS:
+                    self._flush()
+        finally:
+            self._flush()
+            self._consumer.close()
+            self._conn.close()
+            log.info("[%s] worker stopped total_inserted=%d", self.topic, self.total_inserted)
 
-    def shutdown(*_: object) -> None:
-        nonlocal stop
-        stop = True
+    def _flush(self, idle: bool = False) -> None:
+        if self._buffer:
+            self._conn.executemany(
+                f"INSERT INTO {self.table} (received_at, key, payload) VALUES (?, ?, ?::JSON)",
+                self._buffer,
+            )
+            n = len(self._buffer)
+            self.total_inserted += n
+            self._buffer.clear()
+            log.info("[%s] flushed n=%d total_inserted=%d", self.topic, n, self.total_inserted)
+        elif idle:
+            log.info("[%s] idle flush total_inserted=%d", self.topic, self.total_inserted)
+        self.last_flush = time.monotonic()
 
-    signal.signal(signal.SIGINT, shutdown)
-    signal.signal(signal.SIGTERM, shutdown)
 
-    def watchdog() -> None:
-        """Daemon thread. If the main loop hasn't advanced in
-        FREEZE_THRESHOLD_SECONDS, exit hard so Fly restarts the machine."""
-        while not stop:
-            time.sleep(WATCHDOG_INTERVAL_SECONDS)
-            stalled_for = time.monotonic() - last_progress_at
+def _watchdog(workers: list[TopicWorker], stop: threading.Event) -> None:
+    """Daemon thread. If any worker hasn't advanced in
+    FREEZE_THRESHOLD_SECONDS, exit hard so Fly restarts the machine."""
+    while not stop.is_set():
+        time.sleep(WATCHDOG_INTERVAL_SECONDS)
+        now = time.monotonic()
+        for w in workers:
+            stalled_for = now - w.last_progress_at
             if stalled_for > FREEZE_THRESHOLD_SECONDS:
                 log.error(
-                    "watchdog: no main-loop progress for %.0fs (threshold=%.0fs); exiting for restart",
+                    "watchdog: worker %s stalled for %.0fs (threshold=%.0fs); exiting for restart",
+                    w.topic,
                     stalled_for,
                     FREEZE_THRESHOLD_SECONDS,
                 )
                 # _exit bypasses atexit hooks and finally blocks. We want a
-                # fast, deterministic exit; whatever was holding the loop
+                # fast, deterministic exit; whatever was holding the worker
                 # might also block normal shutdown.
                 os._exit(1)
 
-    threading.Thread(target=watchdog, daemon=True, name="sink-watchdog").start()
 
-    def flush() -> None:
-        nonlocal total_inserted
-        for table_name, rows in buffers.items():
-            if not rows:
-                continue
-            conn.executemany(
-                f"INSERT INTO {table_name} (received_at, key, payload) VALUES (?, ?, ?::JSON)",
-                rows,
-            )
-            total_inserted += len(rows)
-            rows.clear()
+def main() -> int:
+    stop = threading.Event()
 
-    try:
-        while not stop:
-            msg = consumer.poll(1.0)
-            last_progress_at = time.monotonic()  # poll returned, loop is alive
-            if msg is None:
-                if time.monotonic() - last_flush >= FLUSH_SECONDS:
-                    flush()
-                    last_flush = time.monotonic()
-                    log.info("idle flush; total_inserted=%d", total_inserted)
-                continue
-            if msg.error():
-                log.warning("consumer error: %s", msg.error())
-                continue
+    def shutdown(*_: object) -> None:
+        stop.set()
 
-            table = TOPIC_TO_TABLE.get(msg.topic())
-            if not table:
-                continue
+    signal.signal(signal.SIGINT, shutdown)
+    signal.signal(signal.SIGTERM, shutdown)
 
-            try:
-                payload_str = msg.value().decode()
-                json.loads(payload_str)  # validate JSON
-            except (json.JSONDecodeError, UnicodeDecodeError) as e:
-                log.warning("bad message on %s: %s", msg.topic(), e)
-                continue
+    workers = [TopicWorker(topic, table, stop) for topic, table in TOPIC_TO_TABLE.items()]
+    for w in workers:
+        w.start()
 
-            buffers[table].append(
-                (
-                    datetime.now(UTC).isoformat(),
-                    msg.key().decode() if msg.key() else None,
-                    payload_str,
-                )
-            )
+    threading.Thread(target=_watchdog, args=(workers, stop), daemon=True, name="sink-watchdog").start()
 
-            total_pending = sum(len(b) for b in buffers.values())
-            if total_pending >= BATCH_SIZE or time.monotonic() - last_flush >= FLUSH_SECONDS:
-                flush()
-                last_flush = time.monotonic()
-                log.info("flushed; total_inserted=%d", total_inserted)
-    finally:
-        flush()
-        consumer.close()
-        conn.close()
-        log.info("shutdown; total_inserted=%d", total_inserted)
+    # Block the main thread until SIGINT/SIGTERM. Worker threads do all
+    # the actual work; the main thread is just here to own the process and
+    # catch signals.
+    while not stop.is_set():
+        time.sleep(1)
 
+    log.info("shutdown signal received, waiting for workers")
+    for w in workers:
+        w.join(timeout=15)
+    log.info("all workers stopped")
     return 0
 
 
