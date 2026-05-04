@@ -71,6 +71,7 @@ def main() -> int:
     )
     sys.path.insert(0, _dashboard_dir)
 
+    import pandas  # noqa: F401  force full pandas init before Streamlit touches plotly
     import streamlit.web.bootstrap
 
     log.info("starting Streamlit dashboard on port %d", DASHBOARD_PORT)

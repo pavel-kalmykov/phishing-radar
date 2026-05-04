@@ -58,3 +58,26 @@ models:
     description: Monthly KEV additions with partial-month flag
   - name: mart_dashboard_c2_by_country
     description: C2 counts per country across Feodo + ThreatFox sources
+  - name: mart_pipeline_health
+    description: >
+      Per-minute pipeline health. Compares certificates entering the firehose
+      (volume counter) against certificates processed by the detector
+      (SUM of cert_stats_1min.count). Also tracks the latest heartbeat from
+      each sink worker. A loss_pct above 1% or a missing heartbeat signals a
+      pipeline issue.
+    columns:
+      - name: window_ts
+        tests:
+          - not_null
+      - name: raw_count
+        tests:
+          - not_null
+      - name: loss_pct
+        tests:
+          - not_null
+      - name: is_healthy
+        tests:
+          - not_null
+      - name: sink_alive
+        tests:
+          - not_null

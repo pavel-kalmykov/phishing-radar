@@ -1,8 +1,13 @@
 phishing_radar:
-  target: dev
+  target: "{{ env_var('DBT_TARGET', 'dev') }}"
   outputs:
     dev:
       type: duckdb
       path: "md:{{ env_var('MD_CATALOG', 'phishing_radar') }}?motherduck_token={{ env_var('MOTHERDUCK_TOKEN') }}"
       schema: "{{ env_var('MD_DATABASE', 'main') }}"
+      threads: 4
+    local:
+      type: duckdb
+      path: "{{ env_var('DATABASE_URL', 'data/local.duckdb') }}"
+      schema: main
       threads: 4

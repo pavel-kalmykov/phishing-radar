@@ -3,7 +3,7 @@ version: 2
 sources:
   - name: phishing_radar
     description: Raw tables loaded by dlt ingestion pipelines and the streaming sink
-    database: "{{ env_var('MD_CATALOG', 'phishing_radar') }}"
+    database: "{{ env_var('MD_CATALOG', '') }}"
     schema: "{{ env_var('MD_DATABASE', 'main') }}"
     tables:
       - name: cisa_kev
@@ -69,3 +69,9 @@ sources:
         freshness:
           warn_after: {count: 30, period: minute}
           error_after: {count: 4, period: hour}
+      - name: raw_pipeline_events
+        description: Pipeline observability events — volume counts, worker heartbeats, freeze detections. Written by the sink watchdog, sink workers, and pipeline_monitor.
+        loaded_at_field: event_at
+        freshness:
+          warn_after: {count: 5, period: minute}
+          error_after: {count: 15, period: minute}

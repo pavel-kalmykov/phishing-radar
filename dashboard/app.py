@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import hashlib
 import os
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
+from pathlib import Path
 from typing import Any
 
 import duckdb
@@ -24,6 +26,8 @@ import streamlit as st
 
 MD_CATALOG = os.getenv("MD_CATALOG", "phishing_radar")
 MD_DATABASE = os.getenv("MD_DATABASE", "main")
+DATABASE_URL = os.getenv("DATABASE_URL")
+ARCHIVE_MODE = os.getenv("ARCHIVE_MODE", "0") == "1"
 
 st.set_page_config(
     page_title="Phishing Radar",
@@ -40,6 +44,10 @@ st.set_page_config(
 
 @st.cache_resource
 def get_conn() -> duckdb.DuckDBPyConnection:
+    if DATABASE_URL:
+        if "://" not in DATABASE_URL and not DATABASE_URL.startswith("md:"):
+            Path(DATABASE_URL).parent.mkdir(parents=True, exist_ok=True)
+        return duckdb.connect(DATABASE_URL)
     token = os.getenv("MOTHERDUCK_TOKEN")
     if not token:
         try:
@@ -51,16 +59,75 @@ def get_conn() -> duckdb.DuckDBPyConnection:
 
 def run_query(sql: str, params: tuple | None = None) -> pd.DataFrame:
     """Plain executor. Caching is the caller's responsibility because TTL
-    depends on what the query reads (streaming vs batch vs filter list)."""
-    if params:
-        return get_conn().execute(sql, params).df()
-    return get_conn().execute(sql).df()
+    depends on what the query reads (streaming vs batch vs filter list).
+
+    Returns an empty DataFrame when a referenced table or mart does not
+    exist so the dashboard degrades gracefully instead of crashing.
+    """
+    try:
+        if params:
+            return get_conn().execute(sql, params).df()
+        return get_conn().execute(sql).df()
+    except duckdb.CatalogException:
+        return pd.DataFrame()
 
 
 # Cache TTL tiers so refreshes match the cadence of the underlying data:
 LIVE_TTL = 60  # streaming-derived widgets (KPIs, suspicious_certs slices)
 BATCH_TTL = 300  # slower-moving aggregates (KEV, Spamhaus, C2 marts)
 FILTER_TTL = 600  # filter dropdowns (brand list, top issuers)
+
+# Timezone options for the filter bar. Curated short list of common zones;
+# the full list is too noisy for a selectbox.
+_TZ_SHORT_LIST = [
+    "Local",
+    "UTC",
+    "Europe/Madrid",
+    "Europe/London",
+    "Europe/Berlin",
+    "US/Eastern",
+    "US/Central",
+    "US/Mountain",
+    "US/Pacific",
+    "Asia/Singapore",
+    "Asia/Tokyo",
+    "Asia/Shanghai",
+    "Asia/Kolkata",
+    "Australia/Sydney",
+]
+
+
+def _detect_local_tz() -> str:
+    """Return the local IANA timezone name or 'UTC' if undetectable."""
+    try:
+        return datetime.now(timezone.utc).astimezone().tzname() or "UTC"
+    except Exception:
+        return "UTC"
+
+
+def tz_convert(df: pd.DataFrame, tz_name: str) -> pd.DataFrame:
+    """Convert every tz-naive datetime column in *df* from UTC to *tz_name*.
+
+    DuckDB returns naive UTC timestamps. Plotly and st.dataframe honour
+    tz-aware columns, so the chart axes and table cells render in the
+    chosen timezone automatically.
+    """
+    if df.empty or not tz_name or tz_name == "UTC":
+        return df
+    try:
+        target = ZoneInfo(tz_name)
+    except Exception:
+        return df
+    df = df.copy()
+    for col in df.columns:
+        if pd.api.types.is_datetime64_any_dtype(df[col]):
+            df[col] = df[col].dt.tz_localize("UTC").dt.tz_convert(target)
+    return df
+
+
+def with_tz(df: pd.DataFrame) -> pd.DataFrame:
+    """Apply tz_convert using the current session_state timezone."""
+    return tz_convert(df, st.session_state.get("tz", "UTC"))
 
 
 # =============================================================================
@@ -153,7 +220,7 @@ st.markdown(
   }}
   .kpi .label {{
     color: {TEXT_DIM}; font-size: 0.7rem; letter-spacing: 0.1em;
-    text-transform: uppercase; margin-top: 0.3rem;
+    text-transform: uppercase; margin-bottom: 0.3rem;
   }}
   .kpi.pink   {{ --accent: {ACCENT_PINK}; }}   .kpi.pink .value   {{ color: {ACCENT_PINK}; }}
   .kpi.cyan   {{ --accent: {ACCENT_CYAN}; }}   .kpi.cyan .value   {{ color: {ACCENT_CYAN}; }}
@@ -435,7 +502,10 @@ def malware_tooltip(family: str | None) -> str:
 
 @st.cache_data(ttl=LIVE_TTL)
 def q_kpis() -> dict[str, Any]:
-    return run_query(f"select * from {MD_DATABASE}.mart_dashboard_kpis").iloc[0].to_dict()
+    df = run_query(f"select * from {MD_DATABASE}.mart_dashboard_kpis")
+    if df.empty:
+        return {}
+    return df.iloc[0].to_dict()
 
 
 @st.cache_data(ttl=BATCH_TTL)
@@ -580,6 +650,17 @@ def q_filter_options() -> dict[str, list[str]]:
     return {"brands": brands, "issuers": issuers}
 
 
+@st.cache_data(ttl=LIVE_TTL)
+def q_pipeline_health() -> pd.DataFrame:
+    return run_query(f"""
+        select window_ts, raw_count, processed_count, lost_events,
+               loss_pct, last_heartbeat_at, is_healthy, sink_alive
+        from {MD_DATABASE}.mart_pipeline_health
+        order by window_ts desc
+        limit 120
+    """)
+
+
 # =============================================================================
 # HEADER + KPIs
 # =============================================================================
@@ -610,47 +691,48 @@ def _kpi(klass: str, value: int, label: str, tooltip: str) -> str:
     )
 
 
-st.markdown(
-    "<div class='kpi-grid'>"
-    + _kpi(
-        "pink",
-        int(kpis["kev_total"]),
-        "CVEs actively exploited",
-        "CVEs added to CISA's Known Exploited Vulnerabilities catalogue in the last 365 days.",
+if kpis:
+    st.markdown(
+        "<div class='kpi-grid'>"
+        + _kpi(
+            "pink",
+            int(kpis.get("kev_total", 0)),
+            "CVEs actively exploited",
+            "CVEs added to CISA's Known Exploited Vulnerabilities catalogue in the last 365 days.",
+        )
+        + _kpi(
+            "gold",
+            int(kpis.get("kev_ransomware", 0)),
+            "Used by ransomware",
+            "Subset of KEV flagged by CISA as tied to known ransomware campaigns.",
+        )
+        + _kpi(
+            "cyan",
+            int(kpis.get("c2_total", 0)),
+            "Online botnet C2s",
+            "Active Command-and-Control IPs from abuse.ch Feodo Tracker + ThreatFox (botnet_cc IoCs).",
+        )
+        + _kpi(
+            "violet",
+            int(kpis.get("c2_countries", 0)),
+            "Countries hosting C2s",
+            "Distinct hosting countries across the C2 IPs, derived from MaxMind GeoLite2-Country.",
+        )
+        + _kpi(
+            "green",
+            int(kpis.get("malware_total", 0)),
+            "Malware in MITRE",
+            "Software entries in the MITRE ATT&CK catalogue (malware + tools).",
+        )
+        + _kpi(
+            "pink",
+            int(kpis.get("suspicious_total", 0)),
+            "Phishing certs seen",
+            "Total TLS certs flagged as likely impersonations since the CertStream producer came up.",
+        )
+        + "</div>",
+        unsafe_allow_html=True,
     )
-    + _kpi(
-        "gold",
-        int(kpis["kev_ransomware"]),
-        "Used by ransomware",
-        "Subset of KEV flagged by CISA as tied to known ransomware campaigns.",
-    )
-    + _kpi(
-        "cyan",
-        int(kpis["c2_total"]),
-        "Online botnet C2s",
-        "Active Command-and-Control IPs from abuse.ch Feodo Tracker + ThreatFox (botnet_cc IoCs).",
-    )
-    + _kpi(
-        "violet",
-        int(kpis["c2_countries"]),
-        "Countries hosting C2s",
-        "Distinct hosting countries across the C2 IPs, derived from MaxMind GeoLite2-Country.",
-    )
-    + _kpi(
-        "green",
-        int(kpis["malware_total"]),
-        "Malware in MITRE",
-        "Software entries in the MITRE ATT&CK catalogue (malware + tools).",
-    )
-    + _kpi(
-        "pink",
-        int(kpis["suspicious_total"]),
-        "Phishing certs seen",
-        "Total TLS certs flagged as likely impersonations since the CertStream producer came up.",
-    )
-    + "</div>",
-    unsafe_allow_html=True,
-)
 
 
 st.markdown(
@@ -675,16 +757,29 @@ st.markdown(
 
 
 # =============================================================================
+# ARCHIVE MODE BANNER
+# =============================================================================
+
+if ARCHIVE_MODE:
+    st.warning(
+        "This dashboard is in **archive mode**: the data capture window is frozen "
+        "and the streaming pipeline is no longer running. All charts reflect a "
+        "historical snapshot. See the README for the capture date range and how "
+        "to run the full pipeline locally.",
+        icon="🗄️",
+    )
+
+# =============================================================================
 # GLOBAL FILTER BAR
 # =============================================================================
 
 filter_opts = q_filter_options()
 
 # Filter bar. st.container(border=True) gives us the panel outline; inside,
-# four columns hold date range, brand, issuing CA and the Live-refresh toggle
-# that drives the Live stream fragment.
+# five columns hold date range, brand, issuing CA, timezone and the
+# Live-refresh toggle that drives the Live stream fragment.
 with st.container(border=True):
-    fcol1, fcol2, fcol3, fcol4 = st.columns([2, 1.3, 1.3, 1])
+    fcol1, fcol2, fcol3, fcol4, fcol5 = st.columns([2, 1.1, 1.1, 0.8, 0.8])
     with fcol1:
         today = date.today()
         default_since = today - timedelta(days=7)
@@ -699,6 +794,17 @@ with st.container(border=True):
     with fcol3:
         issuer = st.selectbox("Issuing CA", ["(all)"] + filter_opts["issuers"])
     with fcol4:
+        if "tz" not in st.session_state:
+            st.session_state.tz = _detect_local_tz()
+        default_tz_idx = 0  # "Local" is always index 0
+        tz_display = st.selectbox(
+            "Timezone",
+            _TZ_SHORT_LIST,
+            index=default_tz_idx,
+            help="Timestamps in charts, tables, and labels are shown in this timezone.",
+        )
+        st.session_state.tz = _detect_local_tz() if tz_display == "Local" else tz_display
+    with fcol5:
         live = st.toggle("Live refresh", value=False, help="Re-queries the stream every 30s.")
 
 if isinstance(date_range, tuple) and len(date_range) == 2:
@@ -711,8 +817,8 @@ since = datetime.combine(since_d, datetime.min.time())
 until = datetime.combine(until_d, datetime.max.time())
 
 
-tab_overview, tab_stream, tab_batch, tab_map, tab_about = st.tabs(
-    ["Overview", "Live phishing stream", "Threat landscape", "Map", "Stack"]
+tab_overview, tab_stream, tab_batch, tab_map, tab_health, tab_about = st.tabs(
+    ["Overview", "Live phishing stream", "Threat landscape", "Map", "Health", "Stack"]
 )
 
 
@@ -724,7 +830,7 @@ tab_overview, tab_stream, tab_batch, tab_map, tab_about = st.tabs(
 def render_c2_malware_chart(key_suffix: str, height: int = 360) -> None:
     """Horizontal bar of active C2s per malware family, with hover tooltip
     drawn from MALWARE_DESCRIPTIONS."""
-    c2_mal = q_c2_by_malware()
+    c2_mal = q_c2_by_malware().pipe(with_tz)
     if c2_mal.empty:
         st.info("No active C2s tracked right now.")
         return
@@ -747,7 +853,7 @@ def render_c2_malware_chart(key_suffix: str, height: int = 360) -> None:
 
 
 def render_suspicious_hourly(key_suffix: str) -> None:
-    sus_time = q_suspicious_hourly(since, until, issuer)
+    sus_time = q_suspicious_hourly(since, until, issuer).pipe(with_tz)
     if sus_time.empty:
         st.info("No flagged certs in the selected range.")
         return
@@ -783,7 +889,7 @@ def render_suspicious_hourly(key_suffix: str) -> None:
 
 
 def render_top_issuers(key_suffix: str) -> None:
-    issuers = q_top_issuers(since, until)
+    issuers = q_top_issuers(since, until).pipe(with_tz)
     if issuers.empty:
         st.info("No data for this range.")
         return
@@ -993,7 +1099,7 @@ with tab_batch:
 """,
             unsafe_allow_html=True,
         )
-        kev_monthly = q_kev_monthly()
+        kev_monthly = q_kev_monthly().pipe(with_tz)
         if not kev_monthly.empty:
             # Plotly only accepts alpha via rgba(), not 8-digit hex, so we
             # render partial months translucent using the gold accent's rgb.
@@ -1024,7 +1130,7 @@ with tab_batch:
 """,
             unsafe_allow_html=True,
         )
-        spam = q_spamhaus_buckets()
+        spam = q_spamhaus_buckets().pipe(with_tz)
         if not spam.empty:
             # Force prefix-length order (huge first, small last) so the bars
             # read as a histogram of block sizes, not alphabetically.
@@ -1065,7 +1171,7 @@ with tab_batch:
 """,
             unsafe_allow_html=True,
         )
-        kev_vendors = q_kev_vendors()
+        kev_vendors = q_kev_vendors().pipe(with_tz)
         if not kev_vendors.empty:
             # Clamp the color scale at 50% so one outlier vendor (SmarterTools
             # with 1 CVE, 100% ransomware-linked) doesn't flatten the rest of
@@ -1123,7 +1229,7 @@ with tab_batch:
 """,
             unsafe_allow_html=True,
         )
-        c2_country = q_c2_by_country()
+        c2_country = q_c2_by_country().pipe(with_tz)
         if not c2_country.empty:
             top = c2_country[c2_country["country"] != "(unknown)"].head(15).copy()
             top["tooltip"] = top["top_family"].map(malware_tooltip)
@@ -1179,56 +1285,59 @@ with tab_map:
     )
 
     c2_rows = q_c2_active_rows()
-    mappable = c2_rows.dropna(subset=["latitude", "longitude"]).copy()
-    unmapped = c2_rows[c2_rows["latitude"].isna()].copy()
-
-    if mappable.empty:
-        st.info("No geolocated C2s right now.")
+    if c2_rows.empty:
+        st.info("No C2 data yet.")
     else:
-        # Deterministic jitter so dots don't dance across reruns: hash the IP
-        # and map to +/- 0.3 degrees. Keeps IPs on the same AS visually
-        # separable without lying about the location (jitter << country size).
-        def _jitter(ip: str, i: int) -> float:
-            h = int(hashlib.md5(f"{ip}:{i}".encode()).hexdigest()[:8], 16)
-            return ((h % 1000) / 1000.0 - 0.5) * 0.6  # +/- 0.3 deg
+        mappable = c2_rows.dropna(subset=["latitude", "longitude"]).copy()
+        unmapped = c2_rows[c2_rows["latitude"].isna()].copy()
 
-        mappable["lat_jit"] = [
-            lat + _jitter(ip, 0) for ip, lat in zip(mappable["ip_address"], mappable["latitude"], strict=True)
-        ]
-        mappable["lon_jit"] = [
-            lon + _jitter(ip, 1) for ip, lon in zip(mappable["ip_address"], mappable["longitude"], strict=True)
-        ]
-        mappable["place"] = [
-            f"{c}, {n}" if c else n for c, n in zip(mappable["city_name"], mappable["country_name"], strict=True)
-        ]
-        mappable["fam_display"] = mappable["malware_family"].fillna("(unknown)")
-        mappable["desc"] = mappable["malware_family"].map(malware_tooltip)
+        if mappable.empty:
+            st.info("No geolocated C2s right now.")
+        else:
+            # Deterministic jitter so dots don't dance across reruns: hash the IP
+            # and map to +/- 0.3 degrees. Keeps IPs on the same AS visually
+            # separable without lying about the location (jitter << country size).
+            def _jitter(ip: str, i: int) -> float:
+                h = int(hashlib.md5(f"{ip}:{i}".encode()).hexdigest()[:8], 16)
+                return ((h % 1000) / 1000.0 - 0.5) * 0.6  # +/- 0.3 deg
 
-        # One trace per malware family so plotly auto-assigns colours and the
-        # legend lets you toggle families on/off.
-        families = mappable["fam_display"].value_counts()
-        palette = [
-            ACCENT_PINK,
-            ACCENT_CYAN,
-            ACCENT_GOLD,
-            ACCENT_VIOLET,
-            ACCENT_GREEN,
-            "#ff9acb",
-            "#7ae9ff",
-            "#ffdd7d",
-            "#b69eff",
-            "#7affcb",
-        ]
-        fig = go.Figure()
-        for idx, (fam, _count) in enumerate(families.items()):
-            sub = mappable[mappable["fam_display"] == fam]
-            fig.add_trace(
-                go.Scattergeo(
-                    lon=sub["lon_jit"],
-                    lat=sub["lat_jit"],
-                    name=fam,
-                    text=sub["ip_address"],
-                    customdata=sub[["place", "fam_display", "desc", "port", "source"]].values,
+            mappable["lat_jit"] = [
+                lat + _jitter(ip, 0) for ip, lat in zip(mappable["ip_address"], mappable["latitude"], strict=True)
+            ]
+            mappable["lon_jit"] = [
+                lon + _jitter(ip, 1) for ip, lon in zip(mappable["ip_address"], mappable["longitude"], strict=True)
+            ]
+            mappable["place"] = [
+                f"{c}, {n}" if c else n for c, n in zip(mappable["city_name"], mappable["country_name"], strict=True)
+            ]
+            mappable["fam_display"] = mappable["malware_family"].fillna("(unknown)")
+            mappable["desc"] = mappable["malware_family"].map(malware_tooltip)
+
+            # One trace per malware family so plotly auto-assigns colours and the
+            # legend lets you toggle families on/off.
+            families = mappable["fam_display"].value_counts()
+            palette = [
+                ACCENT_PINK,
+                ACCENT_CYAN,
+                ACCENT_GOLD,
+                ACCENT_VIOLET,
+                ACCENT_GREEN,
+                "#ff9acb",
+                "#7ae9ff",
+                "#ffdd7d",
+                "#b69eff",
+                "#7affcb",
+            ]
+            fig = go.Figure()
+            for idx, (fam, _count) in enumerate(families.items()):
+                sub = mappable[mappable["fam_display"] == fam]
+                fig.add_trace(
+                    go.Scattergeo(
+                        lon=sub["lon_jit"],
+                        lat=sub["lat_jit"],
+                        name=fam,
+                        text=sub["ip_address"],
+                        customdata=sub[["place", "fam_display", "desc", "port", "source"]].values,
                     marker=dict(
                         size=9,
                         color=palette[idx % len(palette)],
@@ -1245,82 +1354,82 @@ with tab_map:
                 )
             )
 
-        fig.update_geos(
-            projection_type="natural earth",
-            bgcolor=BG_CARD,
-            showcountries=True,
-            countrycolor=BORDER,
-            showocean=True,
-            oceancolor=BG,
-            showland=True,
-            landcolor="#10102a",
-            showframe=False,
-            showcoastlines=False,
-        )
-        fig.update_layout(
-            height=560,
-            margin=dict(l=0, r=0, t=10, b=0),
-            paper_bgcolor=BG_CARD,
-            geo=dict(bgcolor=BG_CARD),
-            legend=dict(
-                bgcolor="rgba(0,0,0,0.3)",
-                bordercolor=BORDER,
-                borderwidth=1,
-                font=dict(color=TEXT_MUTED, size=10),
-            ),
-        )
-        st.plotly_chart(fig, use_container_width=True, key="map_c2_ip_scatter")
+            fig.update_geos(
+                projection_type="natural earth",
+                bgcolor=BG_CARD,
+                showcountries=True,
+                countrycolor=BORDER,
+                showocean=True,
+                oceancolor=BG,
+                showland=True,
+                landcolor="#10102a",
+                showframe=False,
+                showcoastlines=False,
+            )
+            fig.update_layout(
+                height=560,
+                margin=dict(l=0, r=0, t=10, b=0),
+                paper_bgcolor=BG_CARD,
+                geo=dict(bgcolor=BG_CARD),
+                legend=dict(
+                    bgcolor="rgba(0,0,0,0.3)",
+                    bordercolor=BORDER,
+                    borderwidth=1,
+                    font=dict(color=TEXT_MUTED, size=10),
+                ),
+            )
+            st.plotly_chart(fig, use_container_width=True, key="map_c2_ip_scatter")
 
-        col1, col2 = st.columns([1, 1])
-        with col1:
-            st.markdown(
-                "<div class='card'><h3>Geolocated IPs</h3><p class='tagline'>Active C2s placed on the map.</p></div>",
-                unsafe_allow_html=True,
-            )
-            st.dataframe(
-                mappable.rename(
-                    columns={
-                        "ip_address": "IP",
-                        "port": "Port",
-                        "malware_family": "Family",
-                        "place": "Place",
-                        "source": "Source",
-                    }
-                )[["IP", "Port", "Family", "Place", "Source"]].head(30),
-                use_container_width=True,
-                hide_index=True,
-                height=380,
-            )
-        with col2:
-            if not unmapped.empty:
+            col1, col2 = st.columns([1, 1])
+            with col1:
                 st.markdown(
-                    "<div class='card'><h3>Not geolocated</h3>"
-                    "<p class='tagline'>IPs whose block doesn&rsquo;t match a GeoLite2 "
-                    "row (usually tiny registrations, anycast or Seychelles-flagged "
-                    "bulletproof hosts). They count towards totals but don&rsquo;t "
-                    "appear on the map.</p></div>",
+                    "<div class='card'><h3>Geolocated IPs</h3><p class='tagline'>Active C2s placed on the map.</p></div>",
                     unsafe_allow_html=True,
                 )
                 st.dataframe(
-                    unmapped.rename(
+                    mappable.rename(
                         columns={
                             "ip_address": "IP",
                             "port": "Port",
                             "malware_family": "Family",
-                            "country_name": "Country",
+                            "place": "Place",
+                            "source": "Source",
                         }
-                    )[["IP", "Port", "Family", "Country"]],
+                    )[["IP", "Port", "Family", "Place", "Source"]].head(30),
                     use_container_width=True,
                     hide_index=True,
-                    height=240,
+                    height=380,
                 )
-        st.markdown(
-            "<div class='source'>"
-            "mart_c2_active &middot; one row per IP, lat/lon from MaxMind GeoLite2-City. "
-            "Jitter &plusmn;0.3&deg; applied so IPs sharing a block are visible."
-            "</div>",
-            unsafe_allow_html=True,
-        )
+            with col2:
+                if not unmapped.empty:
+                    st.markdown(
+                        "<div class='card'><h3>Not geolocated</h3>"
+                        "<p class='tagline'>IPs whose block doesn&rsquo;t match a GeoLite2 "
+                        "row (usually tiny registrations, anycast or Seychelles-flagged "
+                        "bulletproof hosts). They count towards totals but don&rsquo;t "
+                        "appear on the map.</p></div>",
+                        unsafe_allow_html=True,
+                    )
+                    st.dataframe(
+                        unmapped.rename(
+                            columns={
+                                "ip_address": "IP",
+                                "port": "Port",
+                                "malware_family": "Family",
+                                "country_name": "Country",
+                            }
+                        )[["IP", "Port", "Family", "Country"]],
+                        use_container_width=True,
+                        hide_index=True,
+                        height=240,
+                    )
+            st.markdown(
+                "<div class='source'>"
+                "mart_c2_active &middot; one row per IP, lat/lon from MaxMind GeoLite2-City. "
+                "Jitter &plusmn;0.3&deg; applied so IPs sharing a block are visible."
+                "</div>",
+                unsafe_allow_html=True,
+            )
 
 
 # =============================================================================
@@ -1402,6 +1511,163 @@ with tab_about:
             "<p class='tagline' style='margin-top:0.9rem;'>Source on "
             "<a href='https://github.com/pavel-kalmykov/phishing-radar'>GitHub</a>. "
             "Data Engineering Zoomcamp 2026.</p>"
+            "</div>",
+            unsafe_allow_html=True,
+        )
+
+
+# =============================================================================
+# TAB: HEALTH
+# =============================================================================
+
+with tab_health:
+    health = q_pipeline_health().pipe(with_tz)
+
+    if health.empty:
+        st.info("No pipeline health data yet. Start the monitor and sink to populate this view.")
+    else:
+        st.markdown(
+            "<p class='card'>"
+            "Every minute, a <strong>volume counter</strong> tallies raw certificates "
+            "entering the CertStream firehose while the <strong>detector</strong> "
+            "classifies and counts them. The difference (lost events) is the gap "
+            "between what arrived and what was processed. "
+            "Pipeline health is <strong>Healthy</strong> when loss stays at or below 1% "
+            "across all recent windows. Sink workers emit a <strong>heartbeat</strong> "
+            "every 60 seconds; staleness signals either a frozen consumer or a dead process."
+            "</p>",
+            unsafe_allow_html=True,
+        )
+
+        latest = health.iloc[0]
+
+        # ---- KPI row ---------------------------------------------------------
+        healthy = bool(latest["is_healthy"])
+        sink_ok = bool(latest["sink_alive"])
+
+        def _health_kpi(klass: str, value: str, label: str, tooltip: str) -> str:
+            return (
+                f"<div class='kpi {klass}' title='{tooltip}'>"
+                f"<div class='label'>{label}</div>"
+                f"<div class='value'>{value}</div>"
+                "</div>"
+            )
+
+        pipeline_status = "Healthy" if healthy else "Degraded"
+        pipeline_klass = "green" if healthy else "pink"
+        sink_status = "Alive" if sink_ok else "Unreachable"
+        sink_klass = "green" if sink_ok else "pink"
+
+        loss_str = f"{latest['loss_pct']:.2f}%"
+        loss_klass = "green" if latest["loss_pct"] <= 1.0 else ("gold" if latest["loss_pct"] <= 5.0 else "pink")
+
+        tz = st.session_state.get("tz", "UTC")
+        heartbeat_str = (
+            latest["last_heartbeat_at"].strftime(f"%H:%M:%S %Z")
+            if pd.notna(latest["last_heartbeat_at"])
+            else "never"
+        )
+
+        last_volume = f"{int(latest['raw_count']):,}"
+        last_processed = f"{int(latest['processed_count']):,}"
+
+        st.markdown(
+            "<div class='kpi-grid'>"
+            + _health_kpi(pipeline_klass, pipeline_status, "Pipeline", "Healthy when loss <= 1% across all windows.")
+            + _health_kpi(loss_klass, loss_str, "Event loss", "Percentage of certstream events not accounted for by the detector.")
+            + _health_kpi("cyan", last_volume, "Raw events (last min)", "Certificates seen by the volume counter in the latest window.")
+            + _health_kpi("violet", last_processed, "Processed (last min)", "Certificates processed by the detector in the same window (sum of cert_stats_1min).")
+            + _health_kpi(sink_klass, sink_status, "Sink heartbeat", f"Last: {heartbeat_str}. Stale after 2 minutes.")
+            + _health_kpi("gold", f"{int(latest['lost_events']):,}", "Lost events (last min)", "raw_count − processed_count for the latest window.")
+            + "</div>",
+            unsafe_allow_html=True,
+        )
+
+        # ---- Volume vs Processed chart ---------------------------------------
+        chart_data = health.copy()
+        chart_data = chart_data.sort_values("window_ts")
+
+        fig = go.Figure()
+
+        fig.add_trace(
+            go.Scatter(
+                x=chart_data["window_ts"],
+                y=chart_data["raw_count"],
+                name="Raw (volume counter)",
+                mode="lines",
+                line=dict(color=ACCENT_CYAN, width=2),
+                fill="tozeroy",
+                fillcolor="rgba(0,229,255,0.06)",
+                hovertemplate="%{y:,} certs<br>%{x}<extra></extra>",
+            )
+        )
+
+        fig.add_trace(
+            go.Scatter(
+                x=chart_data["window_ts"],
+                y=chart_data["processed_count"],
+                name="Processed (detector)",
+                mode="lines",
+                line=dict(color=ACCENT_VIOLET, width=2),
+                fill="tozeroy",
+                fillcolor="rgba(124,77,255,0.06)",
+                hovertemplate="%{y:,} certs<br>%{x}<extra></extra>",
+            )
+        )
+
+        # Loss % on secondary y-axis
+        fig.add_trace(
+            go.Scatter(
+                x=chart_data["window_ts"],
+                y=chart_data["loss_pct"],
+                name="Loss %",
+                mode="lines",
+                line=dict(color=ACCENT_PINK, width=1.5, dash="dot"),
+                yaxis="y2",
+                hovertemplate="%{y:.2f}%<extra></extra>",
+            )
+        )
+
+        # 1% threshold line
+        fig.add_hline(
+            y=1.0, line_dash="dash", line_color=ACCENT_GOLD, opacity=0.7,
+            annotation_text="1% threshold", annotation_position="bottom right",
+        )
+
+        layout = {
+            **CHART,
+            "height": 420,
+            "hovermode": "x unified",
+            "yaxis": dict(
+                title="Certificates per minute",
+                gridcolor="rgba(255,255,255,0.04)",
+                zerolinecolor=BORDER,
+            ),
+            "yaxis2": dict(
+                title="Loss %",
+                overlaying="y",
+                side="right",
+                range=[0, max(10, chart_data["loss_pct"].max() * 1.3)],
+                gridcolor="rgba(255,255,255,0.02)",
+                zerolinecolor=BORDER,
+                tickformat=".1f",
+            ),
+            "xaxis": dict(
+                title=f"Window timestamp ({st.session_state.get('tz', 'UTC')})",
+                gridcolor="rgba(255,255,255,0.04)",
+                zerolinecolor=BORDER,
+            ),
+            "legend": dict(orientation="h", yanchor="top", y=1.12, xanchor="left", x=0),
+        }
+        fig.update_layout(**layout)
+
+        st.plotly_chart(fig, use_container_width=True, key="health_volume_chart")
+
+        st.markdown(
+            "<div class='source'>"
+            "mart_pipeline_health &middot; volume_counter → raw_pipeline_events.volume "
+            "+ cert_stats_1min (detector) → processed. "
+            "sink_alive from worker heartbeats every 60s."
             "</div>",
             unsafe_allow_html=True,
         )
