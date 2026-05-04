@@ -14,7 +14,7 @@ from collections.abc import Iterator
 
 import dlt
 
-from batch.common import http_session, md_pipeline
+from batch.common import http_session, build_pipeline
 
 log = logging.getLogger("ingest-feodo")
 
@@ -45,7 +45,7 @@ def feodo_c2_resource() -> Iterator[dict]:
 
 def run() -> dict:
     logging.basicConfig(level=logging.INFO)
-    pipeline = md_pipeline("ingest_feodo")
+    pipeline = build_pipeline("ingest_feodo")
     load_info = pipeline.run(feodo_c2_resource())
     log.info("loaded: %s", load_info)
     return load_info

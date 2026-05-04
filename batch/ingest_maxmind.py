@@ -21,7 +21,7 @@ from pathlib import Path
 import dlt
 import requests
 
-from batch.common import http_session, md_pipeline
+from batch.common import http_session, build_pipeline
 
 log = logging.getLogger("ingest-maxmind")
 
@@ -160,7 +160,7 @@ def run(mmdb_dir: str = "data/geoip") -> dict:
         except requests.exceptions.HTTPError as e:
             log.warning("MMDB download for %s unavailable (%s); using CSV only", edition, e)
 
-    pipeline = md_pipeline("ingest_maxmind")
+    pipeline = build_pipeline("ingest_maxmind")
     load_info = pipeline.run([asn_blocks(), country_blocks(), country_locations(), city_blocks(), city_locations()])
     log.info("loaded: %s", load_info)
     return load_info

@@ -15,7 +15,7 @@ from collections.abc import Iterator
 
 import dlt
 
-from batch.common import http_session, md_pipeline
+from batch.common import http_session, build_pipeline
 
 log = logging.getLogger("ingest-spamhaus")
 
@@ -51,7 +51,7 @@ def spamhaus_drop_resource() -> Iterator[dict]:
 
 def run() -> dict:
     logging.basicConfig(level=logging.INFO)
-    pipeline = md_pipeline("ingest_spamhaus")
+    pipeline = build_pipeline("ingest_spamhaus")
     load_info = pipeline.run(spamhaus_drop_resource())
     log.info("loaded: %s", load_info)
     return load_info

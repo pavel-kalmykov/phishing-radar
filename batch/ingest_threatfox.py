@@ -18,7 +18,7 @@ from collections.abc import Iterator
 
 import dlt
 
-from batch.common import http_session, md_pipeline
+from batch.common import http_session, build_pipeline
 
 log = logging.getLogger("ingest-threatfox")
 
@@ -71,7 +71,7 @@ def threatfox_iocs() -> Iterator[dict]:
 
 def run() -> dict:
     logging.basicConfig(level=logging.INFO)
-    pipeline = md_pipeline("ingest_threatfox")
+    pipeline = build_pipeline("ingest_threatfox")
     load_info = pipeline.run(threatfox_iocs())
     log.info("loaded: %s", load_info)
     return load_info

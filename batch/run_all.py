@@ -15,11 +15,12 @@ log = logging.getLogger("run-all")
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 
-    from batch import ingest_cisa_kev, ingest_feodo, ingest_mitre, ingest_spamhaus
+    from batch import ingest_cisa_kev, ingest_feodo, ingest_mitre, ingest_spamhaus, ingest_threatfox
 
     pipelines = [
         ("cisa_kev", ingest_cisa_kev.run),
         ("feodo", ingest_feodo.run),
+        ("threatfox", ingest_threatfox.run),
         ("spamhaus", ingest_spamhaus.run),
         ("mitre", ingest_mitre.run),
     ]

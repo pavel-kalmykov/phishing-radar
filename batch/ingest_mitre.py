@@ -14,7 +14,7 @@ from collections.abc import Iterator
 
 import dlt
 
-from batch.common import http_session, md_pipeline
+from batch.common import http_session, build_pipeline
 
 log = logging.getLogger("ingest-mitre")
 
@@ -90,7 +90,7 @@ def mitre_attack_source() -> Iterator:
 
 def run() -> dict:
     logging.basicConfig(level=logging.INFO)
-    pipeline = md_pipeline("ingest_mitre")
+    pipeline = build_pipeline("ingest_mitre")
     load_info = pipeline.run(mitre_attack_source())
     log.info("loaded: %s", load_info)
     return load_info

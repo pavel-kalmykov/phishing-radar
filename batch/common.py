@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import Any
 
 import dlt
@@ -11,13 +12,23 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 MD_DATABASE = os.getenv("MD_DATABASE", "main")
+DATABASE_URL = os.getenv("DATABASE_URL", "")
 
 
-def md_pipeline(name: str) -> Any:
-    """Build a dlt pipeline that writes to MotherDuck, database `phishing_radar`.
+def build_pipeline(name: str) -> Any:
+    """Build a dlt pipeline that writes to the configured destination.
 
-    dlt reads the MOTHERDUCK_TOKEN env var automatically for the motherduck destination.
+    When DATABASE_URL is set (local DuckDB), uses the duckdb destination.
+    Otherwise writes to MotherDuck (reads MOTHERDUCK_TOKEN from env).
     """
+    if DATABASE_URL:
+        db_path = Path(DATABASE_URL)
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        return dlt.pipeline(
+            pipeline_name=name,
+            destination=dlt.destinations.duckdb(str(db_path)),
+            dataset_name=MD_DATABASE,
+        )
     return dlt.pipeline(
         pipeline_name=name,
         destination="motherduck",

@@ -14,7 +14,7 @@ from collections.abc import Iterator
 
 import dlt
 
-from batch.common import http_session, md_pipeline
+from batch.common import http_session, build_pipeline
 
 log = logging.getLogger("ingest-cisa-kev")
 
@@ -51,7 +51,7 @@ def cisa_kev_resource() -> Iterator[dict]:
 
 def run() -> dict:
     logging.basicConfig(level=logging.INFO)
-    pipeline = md_pipeline("ingest_cisa_kev")
+    pipeline = build_pipeline("ingest_cisa_kev")
     load_info = pipeline.run(cisa_kev_resource())
     log.info("loaded: %s", load_info)
     return load_info
