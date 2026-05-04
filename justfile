@@ -17,6 +17,44 @@ setup:
 up:
     docker compose up -d
 
+# Start full local stack: infra + sink against local DuckDB.
+# Requires nothing but Docker and uv; no cloud accounts needed.
+up-local:
+    docker compose up -d
+    @echo "Infra running (Redpanda, certstream, Kestra)."
+    @echo "Run the pipeline with DATABASE_URL=data/local.duckdb:"
+    @echo "  DATABASE_URL=data/local.duckdb just producer"
+    @echo "  DATABASE_URL=data/local.duckdb just detect"
+    @echo "  DATABASE_URL=data/local.duckdb just sink"
+    @echo "  DATABASE_URL=data/local.duckdb just dashboard"
+    @echo "After the sink lands data, run dbt:"
+    @echo "  DATABASE_URL=data/local.duckdb just dbt-run-local"
+
+# One-command local stack: infra + batch ingestions + dbt + streaming pipeline + dashboard.
+# Runs batch first (so KPIs, map, and C2 charts have data), then starts the streaming
+# lane and dashboard. All data lands in data/local.duckdb.
+up-local-all:
+    @echo "=== Starting infra ==="
+    docker compose up -d
+    @echo "=== Waiting for Redpanda ==="
+    @until docker compose ps redpanda 2>/dev/null | grep -q healthy; do sleep 2; done
+    @echo "=== Running batch ingestions ==="
+    @DATABASE_URL=data/local.duckdb HTTPS_PROXY= HTTP_PROXY= https_proxy= http_proxy= uv run python -m batch.run_all
+    @echo "=== Running dbt ==="
+    cd dbt && DATABASE_URL=../data/local.duckdb DBT_TARGET=local uv run dbt run --profiles-dir .
+    @echo "=== Starting streaming pipeline ==="
+    @DATABASE_URL=data/local.duckdb nohup uv run python -m streaming.producer.certstream_producer > /tmp/phishing-radar-producer.log 2>&1 &
+    @DATABASE_URL=data/local.duckdb nohup uv run python -m streaming.flink.python_detector > /tmp/phishing-radar-detector.log 2>&1 &
+    @echo "=== Starting sink + dashboard (same process, DuckDB single-writer constraint) ==="
+    @DATABASE_URL=data/local.duckdb nohup uv run python -m streaming.local_runner > /tmp/phishing-radar-runner.log 2>&1 &
+    @sleep 5
+    @echo ""
+    @echo "All done. Dashboard at http://localhost:8501"
+    @echo "Logs: /tmp/phishing-radar-*.log"
+    @echo ""
+    @echo "Stop everything:"
+    @echo "  pkill -f 'streaming.local_runner'; pkill -f 'streaming.producer'; pkill -f 'python_detector'; docker compose down"
+
 # Stop local infra
 down:
     docker compose down
@@ -46,11 +84,17 @@ detect-no-java:
 sink:
     uv run python -m streaming.sink.kafka_to_md
 
-# Run every batch ingestion once (CISA KEV, Feodo, Spamhaus, MITRE, MaxMind)
-batch:
-    uv run python -m batch.run_all
+# Run pipeline volume monitor (observability plane, independent from sink)
+monitor:
+    uv run python -m streaming.observability.pipeline_monitor
 
-# dbt commands run inside dbt/ with the bundled profiles.yml
+# Run every batch ingestion once (CISA KEV, Feodo, ThreatFox, Spamhaus, MITRE, MaxMind)
+batch:
+    HTTPS_PROXY= HTTP_PROXY= https_proxy= http_proxy= uv run python -m batch.run_all
+
+# dbt commands run inside dbt/ with the bundled profiles.yml.
+# Default target is dev (MotherDuck); set DBT_TARGET=local or use the
+# -local variants below for a DuckDB file on disk.
 dbt-run:
     cd dbt && uv run dbt run --profiles-dir .
 
@@ -63,6 +107,16 @@ dbt-deps:
 # Run dbt source freshness checks (warns when ingestion is stale)
 dbt-freshness:
     cd dbt && uv run dbt source freshness --profiles-dir .
+
+# Local DuckDB variants (target=local, reads DATABASE_URL or defaults to data/local.duckdb)
+dbt-run-local:
+    cd dbt && DBT_TARGET=local uv run dbt run --profiles-dir .
+
+dbt-test-local:
+    cd dbt && DBT_TARGET=local uv run dbt test --profiles-dir .
+
+dbt-freshness-local:
+    cd dbt && DBT_TARGET=local uv run dbt source freshness --profiles-dir .
 
 # Launch the Streamlit dashboard on localhost:8501
 dashboard:

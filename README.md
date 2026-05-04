@@ -213,6 +213,44 @@ Local consoles:
 - CertStream server: http://localhost:8090
 - Streamlit dashboard: http://localhost:8501
 
+## Running fully local (no cloud accounts needed)
+
+You can run the entire pipeline with zero cloud dependencies. The warehouse becomes a DuckDB file on disk (`data/local.duckdb`) and Kafka stays in the local Redpanda container. No MotherDuck token, no Redpanda Cloud cluster, no Fly.io, no Streamlit Cloud.
+
+**What you need**: Docker, Python 3.11+, `uv`, `just` (see the table above).
+
+```bash
+cp .env.example .env            # no need to fill anything; MOTHERDUCK_TOKEN can stay empty
+just setup                       # install Python deps
+just up-local                    # docker-compose: Redpanda + certstream + Kestra
+```
+
+Set `DATABASE_URL` to tell every service to use a local DuckDB file instead of MotherDuck:
+
+```bash
+export DATABASE_URL=data/local.duckdb
+
+just producer &                  # CertStream -> local Redpanda
+just detect &                    # PyFlink detector (needs JDK 17)
+just sink &                      # Kafka -> local DuckDB
+just monitor &                   # Observability: volume counter + heartbeats
+just batch                       # one-shot: CISA KEV, Feodo, Spamhaus, MITRE, MaxMind
+just dbt-run-local               # dbt transformations against local DuckDB
+just dashboard                   # Streamlit at localhost:8501
+```
+
+`DATABASE_URL` accepts any DuckDB-compatible connection string: a local path (`data/local.duckdb`), an `md:` prefix for MotherDuck, an `s3://` URL for object storage, etc. The sink, dashboard and dbt all pass it straight to `duckdb.connect()` without interpreting it.
+
+The same pattern works per-service if you only want to test one piece:
+
+```bash
+DATABASE_URL=data/local.duckdb just sink
+DATABASE_URL=data/local.duckdb just dbt-run-local
+DATABASE_URL=data/local.duckdb just dashboard
+```
+
+When `DATABASE_URL` is not set, every service falls back to the original MotherDuck connection (`MOTHERDUCK_TOKEN` + `md:` catalog), so the cloud deployment is unaffected.
+
 ## Deploy to cloud
 
 ```bash
@@ -265,7 +303,8 @@ Every widget reads from pre-aggregated marts (`mart_dashboard_kpis`, `mart_dashb
 ├── streaming/
 │   ├── producer/             # CertStream -> Kafka
 │   ├── flink/                # PyFlink job (deployed) + detection logic + no-Java fallback
-│   └── sink/                 # Kafka -> MotherDuck
+│   ├── sink/                 # Kafka -> MotherDuck + idempotency + retention
+│   └── observability/        # Pipeline monitor (volume counter, heartbeats, watchdog)
 ├── tests/                    # pytest suite
 ├── Dockerfile                # single image for all Python services
 ├── docker-compose.yml        # Redpanda + certstream-server-go + Kestra for local dev
@@ -278,7 +317,7 @@ Every widget reads from pre-aggregated marts (`mart_dashboard_kpis`, `mart_dashb
 
 - `pytest` covers the typosquatting detector and every batch ingester parser (26 assertions across 2 files: detector heuristics, retry/backoff session, mocked HTTP responses for cisa_kev, feodo, threatfox, spamhaus, mitre).
 - `ruff check` in CI.
-- `dbt test` runs 13 schema tests plus 1 singular test (IP format sanity).
+- `dbt test` runs 13 schema tests plus 3 singular tests (IP format sanity, pipeline health, and base models not empty).
 - Detector design note: `docs/detection_alternatives.md` explains why we moved from Levenshtein to Damerau-Levenshtein + Jaro-Winkler and why MinHash was considered then dropped for this workload.
 - Memory footprint and right-sizing rationale: `docs/memory_profile.md` (observed RSS peaks per service, how to reproduce with `memray`, why `MALLOC_ARENA_MAX` is not used).
 - CI workflow at `.github/workflows/ci.yml`.
