@@ -99,6 +99,8 @@ def main() -> int:
 
     # Tumbling window: (window_start_unix // WINDOW_SECONDS) -> { issuer_cn -> (sus, total) }
     windows: dict[int, dict[str, list[int]]] = defaultdict(lambda: defaultdict(lambda: [0, 0]))
+    # Offsets covered by each window bucket for backfill watermarks
+    window_offsets: dict[int, tuple[int, int]] = {}
 
     stop = False
 
@@ -118,12 +120,15 @@ def main() -> int:
         for bucket in list(windows):
             if bucket >= now_bucket:
                 continue  # still open
+            offsets = window_offsets.pop(bucket, (None, None))
             for issuer, (sus, total) in windows[bucket].items():
                 record = {
-                    "window_end": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime((bucket + 1) * WINDOW_SECONDS)),
+                    "window_end": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(bucket * WINDOW_SECONDS)),
                     "issuer_cn": issuer,
                     "suspicious_count": sus,
                     "total_count": total,
+                    "offset_start": offsets[0],
+                    "offset_end": offsets[1],
                 }
                 producer.produce(OUT_STATS, value=json.dumps(record).encode())
                 emitted_stats += 1
@@ -152,6 +157,14 @@ def main() -> int:
 
             issuer = event.get("issuer_cn") or "(unknown)"
             bucket = int(time.time()) // WINDOW_SECONDS
+            offset = msg.offset()
+
+            if offset is not None and offset >= 0:
+                prev = window_offsets.get(bucket)
+                window_offsets[bucket] = (
+                    min(offset, prev[0]) if prev else offset,
+                    max(offset, prev[1]) if prev else offset,
+                )
 
             enriched = enrich(event)
             if enriched:

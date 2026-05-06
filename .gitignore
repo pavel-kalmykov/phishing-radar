@@ -37,6 +37,14 @@ kestra-data/
 streaming/flink/checkpoints/
 streaming/flink/savepoints/
 
+# Data (local only — archive.duckdb is committed)
+data/local.duckdb*
+data/local_compact.duckdb
+data/compact_tmp/
+
+# Logs
+logs/
+
 # MaxMind DB
 *.mmdb
 docs/.local/

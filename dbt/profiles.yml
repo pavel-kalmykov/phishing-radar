@@ -11,3 +11,8 @@ phishing_radar:
       path: "{{ env_var('DATABASE_URL', 'data/local.duckdb') }}"
       schema: main
       threads: 4
+    ci:
+      type: duckdb
+      path: "{{ env_var('ARCHIVE_PATH', '../data/archive.duckdb') }}"
+      schema: main
+      threads: 2

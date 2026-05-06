@@ -35,6 +35,7 @@ log = logging.getLogger("certstream-producer")
 CERTSTREAM_URL = os.getenv("CERTSTREAM_URL", "ws://localhost:8090/full-stream")
 KAFKA_BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP", "localhost:9092")
 CERTSTREAM_TOPIC = os.getenv("CERTSTREAM_TOPIC", "certstream_events")
+PIPELINE_OBS_TOPIC = os.getenv("PIPELINE_OBS_TOPIC", "pipeline_observability")
 
 
 def flatten_event(event: dict[str, Any]) -> dict[str, Any] | None:
@@ -119,10 +120,15 @@ class CertStreamProducer:
         self._stop = asyncio.Event()
         self._sent = 0
         self._skipped = 0
+        self._delivery_failed = 0
+        self._current_minute: datetime | None = None
+        self._ws_count = 0
+        self._obs_topic = os.getenv("PIPELINE_OBS_TOPIC", "pipeline_observability")
 
     def _delivery_report(self, err: Any, msg: Any) -> None:
         if err is not None:
             log.warning("delivery failed: %s", err)
+            self._delivery_failed += 1
 
     async def _poll_loop(self) -> None:
         """Drive librdkafka callbacks from asyncio so delivery reports fire."""
@@ -130,10 +136,40 @@ class CertStreamProducer:
             self.producer.poll(0)
             await asyncio.sleep(0.5)
 
-    async def _stats_loop(self) -> None:
+    async def _volume_loop(self) -> None:
+        """Emit producer_volume events aligned to wall-clock minute boundaries.
+
+        Publishes a count of certs received from the WebSocket to a Kafka
+        observability topic. The local_runner sink consumes this topic and
+        persists to DuckDB, keeping the DB single-writer safe.
+        """
         while not self._stop.is_set():
-            await asyncio.sleep(30)
-            log.info("sent=%d skipped=%d", self._sent, self._skipped)
+            await asyncio.sleep(0.5)
+            now_utc = datetime.now(UTC)
+            current_minute = now_utc.replace(second=0, microsecond=0)
+            if self._current_minute is None:
+                self._current_minute = current_minute
+                continue
+            if current_minute > self._current_minute:
+                count = self._ws_count
+                payload = json.dumps({
+                    "source": "certstream_producer",
+                    "event_type": "producer_volume",
+                    "event_at": self._current_minute.isoformat(),
+                    "ws_cert_count": count,
+                })
+                self.producer.produce(
+                    self._obs_topic,
+                    key=b"producer_volume",
+                    value=payload.encode(),
+                    on_delivery=self._delivery_report,
+                )
+                log.info(
+                    "producer_volume: ws_cert_count=%d sent=%d skipped=%d delivery_failed=%d",
+                    count, self._sent, self._skipped, self._delivery_failed,
+                )
+                self._ws_count = 0
+                self._current_minute = current_minute
 
     async def _consume(self) -> None:
         backoff = 1
@@ -177,6 +213,7 @@ class CertStreamProducer:
                             on_delivery=self._delivery_report,
                         )
                         self._sent += 1
+                        self._ws_count += 1
             except Exception as e:
                 log.warning("websocket error: %s; reconnecting in %ds", e, backoff)
                 await asyncio.sleep(backoff)
@@ -190,7 +227,7 @@ class CertStreamProducer:
             await asyncio.gather(
                 self._consume(),
                 self._poll_loop(),
-                self._stats_loop(),
+                self._volume_loop(),
             )
         finally:
             log.info("flushing producer; sent=%d skipped=%d", self._sent, self._skipped)

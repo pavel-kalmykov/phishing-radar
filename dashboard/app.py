@@ -1,9 +1,9 @@
 """Phishing Radar dashboard.
 
-Operational view over MotherDuck. Uses st.tabs so navigation can never
-collapse into invisibility, renders every block inside a card panel, reads
-from pre-aggregated dbt marts, and exposes a sticky filter bar so every
-widget responds to the same slice of time, brand and CA.
+Reads from pre-aggregated dbt marts in DuckDB. Uses st.tabs so navigation
+can never collapse into invisibility, renders every block inside a card
+panel, and exposes a sticky filter bar so every widget responds to the
+same slice of time, brand and CA.
 
 See docs/detection_alternatives.md for the rationale behind the detector's
 similarity rules.
@@ -13,10 +13,14 @@ from __future__ import annotations
 
 import hashlib
 import os
+import sys
+import time as _time
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Any
+
+from dotenv import load_dotenv
 
 import duckdb
 import pandas as pd
@@ -24,10 +28,25 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
+_ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
+load_dotenv(_ENV_PATH)
+
 MD_CATALOG = os.getenv("MD_CATALOG", "phishing_radar")
 MD_DATABASE = os.getenv("MD_DATABASE", "main")
 DATABASE_URL = os.getenv("DATABASE_URL")
 ARCHIVE_MODE = os.getenv("ARCHIVE_MODE", "0") == "1"
+
+if ARCHIVE_MODE:
+    MD_DATABASE = "main"
+
+_T0 = _time.time()
+
+def _perf(msg: str) -> None:
+    """Write profiling checkpoint to stderr so it appears in Streamlit logs."""
+    elapsed = _time.time() - _T0
+    print(f"[perf {elapsed:06.3f}s] {msg}", file=sys.stderr, flush=True)
+
+_perf("after imports")
 
 st.set_page_config(
     page_title="Phishing Radar",
@@ -35,6 +54,7 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="collapsed",
 )
+_perf("after set_page_config")
 
 
 # =============================================================================
@@ -44,9 +64,17 @@ st.set_page_config(
 
 @st.cache_resource
 def get_conn() -> duckdb.DuckDBPyConnection:
+    if ARCHIVE_MODE:
+        archive_path = DATABASE_URL or os.path.join(os.path.dirname(__file__), "..", "data", "archive.duckdb")
+        return duckdb.connect(archive_path, read_only=True)
     if DATABASE_URL:
-        if "://" not in DATABASE_URL and not DATABASE_URL.startswith("md:"):
+        is_local_file = "://" not in DATABASE_URL and not DATABASE_URL.startswith("md:")
+        if is_local_file:
             Path(DATABASE_URL).parent.mkdir(parents=True, exist_ok=True)
+            # Open read-only so the dashboard coexists with the sink process
+            # that holds a read-write lock on the same DuckDB file.
+            read_only = not os.getenv("LOCAL_RUNNER")
+            return duckdb.connect(DATABASE_URL, read_only=read_only)
         return duckdb.connect(DATABASE_URL)
     token = os.getenv("MOTHERDUCK_TOKEN")
     if not token:
@@ -72,10 +100,11 @@ def run_query(sql: str, params: tuple | None = None) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-# Cache TTL tiers so refreshes match the cadence of the underlying data:
-LIVE_TTL = 60  # streaming-derived widgets (KPIs, suspicious_certs slices)
-BATCH_TTL = 300  # slower-moving aggregates (KEV, Spamhaus, C2 marts)
-FILTER_TTL = 600  # filter dropdowns (brand list, top issuers)
+# Cache TTL tiers. In archive mode all data is static, so TTLs are long.
+# In live mode: LIVE_TTL for streaming-derived widgets, BATCH_TTL for daily feeds.
+LIVE_TTL = 600 if ARCHIVE_MODE else 60
+BATCH_TTL = 3600 if ARCHIVE_MODE else 300
+FILTER_TTL = 3600 if ARCHIVE_MODE else 600
 
 # Timezone options for the filter bar. Curated short list of common zones;
 # the full list is too noisy for a selectbox.
@@ -106,9 +135,10 @@ def _detect_local_tz() -> str:
 
 
 def tz_convert(df: pd.DataFrame, tz_name: str) -> pd.DataFrame:
-    """Convert every tz-naive datetime column in *df* from UTC to *tz_name*.
+    """Convert every datetime column in *df* to *tz_name*.
 
-    DuckDB returns naive UTC timestamps. Plotly and st.dataframe honour
+    DuckDB may return tz-naive timestamps (assumed UTC) or tz-aware ones
+    (TIMESTAMP WITH TIME ZONE columns). Plotly and st.dataframe honour
     tz-aware columns, so the chart axes and table cells render in the
     chosen timezone automatically.
     """
@@ -120,8 +150,12 @@ def tz_convert(df: pd.DataFrame, tz_name: str) -> pd.DataFrame:
         return df
     df = df.copy()
     for col in df.columns:
-        if pd.api.types.is_datetime64_any_dtype(df[col]):
+        if not pd.api.types.is_datetime64_any_dtype(df[col]):
+            continue
+        if df[col].dt.tz is None:
             df[col] = df[col].dt.tz_localize("UTC").dt.tz_convert(target)
+        else:
+            df[col] = df[col].dt.tz_convert(target)
     return df
 
 
@@ -156,6 +190,8 @@ st.markdown(
     f"""
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap');
+
+
 
   header[data-testid="stHeader"] {{ display: none; }}
   [data-testid="stSidebar"] {{ display: none; }}
@@ -312,6 +348,7 @@ st.markdown(
 """,
     unsafe_allow_html=True,
 )
+_perf("after CSS injection")
 
 
 CHART = dict(
@@ -465,12 +502,20 @@ MALWARE_DESCRIPTIONS = {
 
 # Badges for card headers: "FILTERED" means the widget responds to the global
 # filter bar; "SNAPSHOT" means it reads from a pre-aggregated daily mart.
-BADGE_FILTERED = (
-    "<span class='badge filtered' title='Responds to the filter bar (date range, brand, CA).'>FILTERED</span>"
-)
-BADGE_STATIC = (
-    "<span class='badge static' title='Batch mart refreshed daily. Not driven by the filter bar.'>SNAPSHOT</span>"
-)
+if ARCHIVE_MODE:
+    BADGE_FILTERED = (
+        "<span class='badge filtered' title='Responds to the filter bar (date range, brand, CA).'>FILTERED</span>"
+    )
+    BADGE_STATIC = (
+        "<span class='badge static' title='Pre-aggregated from the frozen data snapshot.'>SNAPSHOT</span>"
+    )
+else:
+    BADGE_FILTERED = (
+        "<span class='badge filtered' title='Responds to the filter bar (date range, brand, CA).'>FILTERED</span>"
+    )
+    BADGE_STATIC = (
+        "<span class='badge static' title='Batch mart refreshed daily. Not driven by the filter bar.'>SNAPSHOT</span>"
+    )
 
 
 def tip(term: str, label: str | None = None) -> str:
@@ -559,65 +604,67 @@ def q_spamhaus_buckets() -> pd.DataFrame:
     return run_query(f"select * from {MD_DATABASE}.mart_spamhaus_by_country")
 
 
-# Filtered queries: accept date range + optional brand/issuer, read directly
-# from the staging table so filters are honest (no pre-agg loses rows).
+# All filtered queries read from pre-aggregated marts.  The only query that
+# touches stg_suspicious_certs is q_recent_suspicious (row-level detail),
+# and even that one limits to 50 rows with ORDER BY + LIMIT so DuckDB stops
+# scanning early.
 
 
+@st.cache_data(ttl=LIVE_TTL)
 def q_suspicious_hourly(since: datetime, until: datetime, issuer: str | None) -> pd.DataFrame:
-    clauses = ["seen_at_ts between ? and ?"]
+    clauses = ["hour between ? and ?"]
     params: list[Any] = [since, until]
     if issuer and issuer != "(all)":
         clauses.append("issuer_cn = ?")
         params.append(issuer)
     return run_query(
         f"""
-        select date_trunc('hour', seen_at_ts) as hour, count(*) as flagged,
-               date_trunc('hour', seen_at_ts) >= date_trunc('hour', now()) as is_partial_hour
-        from {MD_DATABASE}.stg_suspicious_certs
+        select hour,
+               sum(flagged) as flagged,
+               bool_or(is_partial_hour) as is_partial_hour
+        from {MD_DATABASE}.mart_dashboard_suspicious_hourly
         where {" and ".join(clauses)}
-        group by 1 order by 1
+        group by hour order by hour
     """,
         tuple(params),
     )
 
 
+@st.cache_data(ttl=LIVE_TTL)
 def q_top_brands(since: datetime, until: datetime, issuer: str | None) -> pd.DataFrame:
-    clauses = ["s.seen_at_ts between ? and ?"]
-    params: list[Any] = [since, until]
+    clauses = ["day between ?::date and ?::date"]
+    params: list[Any] = [since.date(), until.date()]
     if issuer and issuer != "(all)":
-        clauses.append("s.issuer_cn = ?")
+        clauses.append("issuer_cn = ?")
         params.append(issuer)
     return run_query(
         f"""
-        select brand, count(*) as hits
-        from (
-          select s.seen_at_ts, json_extract_string(d.value, '$.brand') as brand
-          from {MD_DATABASE}.stg_suspicious_certs s,
-          lateral (select unnest(from_json(s.detections_raw::varchar, '["json"]')) as value) d
-          where {" and ".join(clauses)}
-        )
-        where brand is not null
-        group by 1 order by hits desc limit 15
+        select brand, sum(hits) as hits
+        from {MD_DATABASE}.mart_dashboard_brand_daily
+        where {" and ".join(clauses)}
+        group by brand order by hits desc limit 15
     """,
         tuple(params),
     )
 
 
-def q_recent_suspicious(since: datetime, until: datetime, brand: str | None, issuer: str | None) -> pd.DataFrame:
+@st.cache_data(ttl=60)
+def _q_recent_suspicious_base(
+    since: datetime, until_floor: datetime, brand: str | None, issuer: str | None
+) -> pd.DataFrame:
+    """Cached bulk: rows up to the last completed minute."""
     clauses = ["seen_at_ts between ? and ?"]
-    params: list[Any] = [since, until]
+    params: list[Any] = [since, until_floor]
     if issuer and issuer != "(all)":
         clauses.append("issuer_cn = ?")
         params.append(issuer)
     if brand and brand != "(all)":
-        # Brand lives inside the detections JSON; check via the raw substring
-        # to avoid a lateral unnest per row.
         clauses.append("detections_raw::varchar ilike ?")
         params.append(f'%"brand":"{brand}"%')
     return run_query(
         f"""
         select seen_at_ts, primary_domain, issuer_cn, max_score
-        from {MD_DATABASE}.stg_suspicious_certs
+        from {MD_DATABASE}.mart_recent_suspicious
         where {" and ".join(clauses)}
         order by seen_at_ts desc limit 50
     """,
@@ -625,13 +672,43 @@ def q_recent_suspicious(since: datetime, until: datetime, brand: str | None, iss
     )
 
 
+def q_recent_suspicious(since: datetime, until: datetime, brand: str | None, issuer: str | None) -> pd.DataFrame:
+    """Union cached bulk + fast delta for the current partial minute."""
+    until_floor = until.replace(second=0, microsecond=0)
+    base = _q_recent_suspicious_base(since, until_floor, brand, issuer)
+    # Delta: rows that arrived since the last completed minute.
+    clauses = ["seen_at_ts > ?"]
+    params: list[Any] = [until_floor]
+    if issuer and issuer != "(all)":
+        clauses.append("issuer_cn = ?")
+        params.append(issuer)
+    if brand and brand != "(all)":
+        clauses.append("detections_raw::varchar ilike ?")
+        params.append(f'%"brand":"{brand}"%')
+    delta = run_query(
+        f"""
+        select seen_at_ts, primary_domain, issuer_cn, max_score
+        from {MD_DATABASE}.mart_recent_suspicious
+        where {" and ".join(clauses)}
+        order by seen_at_ts desc limit 50
+    """,
+        tuple(params),
+    )
+    if delta.empty:
+        return base
+    combined = pd.concat([delta, base], ignore_index=True)
+    combined = combined.drop_duplicates(subset=["seen_at_ts", "primary_domain"])
+    return combined.sort_values("seen_at_ts", ascending=False).head(50)
+
+
+@st.cache_data(ttl=LIVE_TTL)
 def q_top_issuers(since: datetime, until: datetime) -> pd.DataFrame:
     return run_query(
         f"""
-        select coalesce(issuer_cn, '(unknown)') as issuer, count(*) as hits
-        from {MD_DATABASE}.stg_suspicious_certs
-        where seen_at_ts between ? and ?
-        group by 1 order by hits desc limit 12
+        select issuer_cn as issuer, sum(flagged) as hits
+        from {MD_DATABASE}.mart_dashboard_suspicious_hourly
+        where hour between ? and ?
+        group by issuer_cn order by hits desc limit 12
     """,
         (since, until),
     )
@@ -651,21 +728,37 @@ def q_filter_options() -> dict[str, list[str]]:
 
 
 @st.cache_data(ttl=LIVE_TTL)
-def q_pipeline_health() -> pd.DataFrame:
-    return run_query(f"""
-        select window_ts, raw_count, processed_count, lost_events,
-               loss_pct, last_heartbeat_at, is_healthy, sink_alive
+def q_pipeline_health(since: datetime, until: datetime) -> pd.DataFrame:
+    return run_query(
+        f"""
+        select window_ts, ws_count, processed_count,
+               ws_to_detector_lost, ws_to_detector_loss_pct,
+               last_heartbeat_at, is_healthy, sink_alive
         from {MD_DATABASE}.mart_pipeline_health
+        where window_ts between ? and ?
         order by window_ts desc
-        limit 120
-    """)
+        """,
+        (since, until),
+    )
 
 
 # =============================================================================
 # HEADER + KPIs
 # =============================================================================
 
+_perf("before q_kpis (module-level)")
 kpis = q_kpis()
+_perf("after q_kpis")
+
+if ARCHIVE_MODE:
+    st.warning(
+        "This dashboard is in **archive mode**: the data capture window is frozen "
+        "and the streaming pipeline is no longer running. All charts reflect a "
+        "historical snapshot. See the README for the capture date range and how "
+        "to run the full pipeline locally.",
+    )
+
+_perf("after archive banner")
 
 st.markdown("<h1>Phishing Radar</h1>", unsafe_allow_html=True)
 st.markdown(
@@ -756,44 +849,68 @@ st.markdown(
 )
 
 
-# =============================================================================
-# ARCHIVE MODE BANNER
-# =============================================================================
-
-if ARCHIVE_MODE:
-    st.warning(
-        "This dashboard is in **archive mode**: the data capture window is frozen "
-        "and the streaming pipeline is no longer running. All charts reflect a "
-        "historical snapshot. See the README for the capture date range and how "
-        "to run the full pipeline locally.",
-        icon="🗄️",
-    )
-
-# =============================================================================
-# GLOBAL FILTER BAR
-# =============================================================================
-
+_perf("before q_filter_options")
 filter_opts = q_filter_options()
+_perf("after q_filter_options")
 
 # Filter bar. st.container(border=True) gives us the panel outline; inside,
-# five columns hold date range, brand, issuing CA, timezone and the
-# Live-refresh toggle that drives the Live stream fragment.
+# columns hold From datetime, To datetime ("now"), brand, issuing CA, timezone
+# and the Live-refresh toggle that drives the Live stream fragment.
+
+_archive_min = None
+_archive_max = None
+
+if ARCHIVE_MODE:
+    _archive_range = run_query("""
+        SELECT MIN(ts) AS min_ts, MAX(ts) AS max_ts FROM (
+            SELECT hour AS ts FROM mart_dashboard_suspicious_hourly
+            UNION ALL
+            SELECT seen_at_ts AS ts FROM mart_recent_suspicious
+        )
+    """)
+    if not _archive_range.empty:
+        _archive_min = _archive_range["min_ts"].iloc[0].to_pydatetime()
+        _archive_max = _archive_range["max_ts"].iloc[0].to_pydatetime()
+    else:
+        _archive_min = datetime.now() - timedelta(days=7)
+        _archive_max = datetime.now()
+    default_since = _archive_min
+    default_until = _archive_max
+else:
+    default_since = datetime.now() - timedelta(days=7)
+    default_until = "now"
+
+live = st.session_state.get("_live", False) and not ARCHIVE_MODE
+
 with st.container(border=True):
-    fcol1, fcol2, fcol3, fcol4, fcol5 = st.columns([2, 1.1, 1.1, 0.8, 0.8])
+    fcol1, fcol2, fcol3, fcol4, fcol5, fcol6 = st.columns(
+        [1.3, 1.3, 1.1, 1.1, 0.7, 0.7]
+    )
     with fcol1:
-        today = date.today()
-        default_since = today - timedelta(days=7)
-        date_range = st.date_input(
-            "Date range",
-            value=(default_since, today),
-            max_value=today,
-            help="Filters every chart that reads the suspicious-cert stream.",
+        since = st.datetime_input(
+            "From",
+            value=default_since,
+            step=300,
+            key="_filter_from",
+            min_value=_archive_min,
+            max_value=_archive_max,
         )
     with fcol2:
-        brand = st.selectbox("Brand", ["(all)"] + filter_opts["brands"])
+        if live:
+            st.session_state["_filter_to"] = datetime.now()
+        until = st.datetime_input(
+            "To",
+            value=default_until,
+            step=300,
+            key="_filter_to",
+            min_value=_archive_min,
+            max_value=_archive_max,
+        )
     with fcol3:
-        issuer = st.selectbox("Issuing CA", ["(all)"] + filter_opts["issuers"])
+        brand = st.selectbox("Brand", ["(all)"] + filter_opts["brands"])
     with fcol4:
+        issuer = st.selectbox("Issuing CA", ["(all)"] + filter_opts["issuers"])
+    with fcol5:
         if "tz" not in st.session_state:
             st.session_state.tz = _detect_local_tz()
         default_tz_idx = 0  # "Local" is always index 0
@@ -804,18 +921,13 @@ with st.container(border=True):
             help="Timestamps in charts, tables, and labels are shown in this timezone.",
         )
         st.session_state.tz = _detect_local_tz() if tz_display == "Local" else tz_display
-    with fcol5:
-        live = st.toggle("Live refresh", value=False, help="Re-queries the stream every 30s.")
+    with fcol6:
+        if ARCHIVE_MODE:
+            st.toggle("Live refresh", value=False, disabled=True, help="Disabled in archive mode.", key="_live")
+        else:
+            live = st.toggle("Live refresh", value=False, help="Re-executes the script every 5s.", key="_live")
 
-if isinstance(date_range, tuple) and len(date_range) == 2:
-    since_d, until_d = date_range
-else:
-    since_d = date_range if isinstance(date_range, date) else default_since
-    until_d = today
-
-since = datetime.combine(since_d, datetime.min.time())
-until = datetime.combine(until_d, datetime.max.time())
-
+_perf("after filter bar setup")
 
 tab_overview, tab_stream, tab_batch, tab_map, tab_health, tab_about = st.tabs(
     ["Overview", "Live phishing stream", "Threat landscape", "Map", "Health", "Stack"]
@@ -853,12 +965,26 @@ def render_c2_malware_chart(key_suffix: str, height: int = 360) -> None:
 
 
 def render_suspicious_hourly(key_suffix: str) -> None:
-    sus_time = q_suspicious_hourly(since, until, issuer).pipe(with_tz)
+    since_hour = since.replace(minute=0, second=0, microsecond=0)
+    until_hour = until.replace(minute=0, second=0, microsecond=0)
+
+    # Expand the query lower bound to the floored hour so that a partial
+    # boundary hour (e.g. From = 18:20 → 18:00 hour) is included in the
+    # result set and can be marked as partial below.
+    sus_time = q_suspicious_hourly(since_hour, until, issuer).pipe(with_tz)
     if sus_time.empty:
         st.info("No flagged certs in the selected range.")
         return
-    complete = sus_time[~sus_time["is_partial_hour"]]
-    partial = sus_time[sus_time["is_partial_hour"]]
+
+    is_partial = sus_time["is_partial_hour"].copy()
+
+    if since != since_hour:
+        is_partial = is_partial | (sus_time["hour"] == since_hour)
+    if until != until_hour:
+        is_partial = is_partial | (sus_time["hour"] == until_hour)
+
+    complete = sus_time[~is_partial]
+    partial = sus_time[is_partial]
     fig = go.Figure()
     fig.add_trace(
         go.Scatter(
@@ -880,8 +1006,8 @@ def render_suspicious_hourly(key_suffix: str) -> None:
                 y=partial["flagged"],
                 mode="markers",
                 marker=dict(size=9, color=ACCENT_PINK, symbol="diamond-open"),
-                name="Current hour (partial)",
-                hovertemplate="<b>%{x|%Y-%m-%d %H:00}</b><br>%{y} flagged (still in progress)<extra></extra>",
+                name="Partial hour",
+                hovertemplate="<b>%{x|%Y-%m-%d %H:00}</b><br>%{y} flagged (partial window)<extra></extra>",
             )
         )
     fig.update_layout(height=300, **CHART)
@@ -889,7 +1015,8 @@ def render_suspicious_hourly(key_suffix: str) -> None:
 
 
 def render_top_issuers(key_suffix: str) -> None:
-    issuers = q_top_issuers(since, until).pipe(with_tz)
+    since_hour = since.replace(minute=0, second=0, microsecond=0)
+    issuers = q_top_issuers(since_hour, until).pipe(with_tz)
     if issuers.empty:
         st.info("No data for this range.")
         return
@@ -951,6 +1078,7 @@ def render_recent_table(key_suffix: str) -> None:
 # TAB: OVERVIEW
 # =============================================================================
 
+_perf("before tab_overview")
 with tab_overview:
     col1, col2 = st.columns([1, 1])
 
@@ -958,12 +1086,12 @@ with tab_overview:
         st.markdown(
             f"""
 <div class='card'>
-  <h3>The streaming lane {BADGE_FILTERED}</h3>
-  <p class='tagline'>A producer pulls every cert from {tip("CT", "CT")} logs via
-  {tip("CertStream")}, a Python detector scores each domain against a short list of popular
+  <h3>The detection lane {BADGE_FILTERED}</h3>
+  <p class='tagline'>A producer pulled every cert from {tip("CT", "CT")} logs via
+  {tip("CertStream")}, a Python detector scored each domain against a short list of popular
   brands using {tip("homoglyph")} normalisation, substring matching and
   {tip("typosquatting")} ({tip("Damerau-Levenshtein")} 1 or 2 plus {tip("Jaro-Winkler")}),
-  and writes the hits to {tip("MotherDuck")}.</p>
+  and wrote the hits to {tip("DuckDB")}.</p>
   <p class='tagline' style='margin-top:0.5rem;'>Top impersonated brands in the selected window:</p>
 </div>
 """,
@@ -985,7 +1113,7 @@ with tab_overview:
   {tip("abuse.ch", "abuse.ch")} {tip("ThreatFox")}, {tip("Spamhaus", "Spamhaus")}
   {tip("DROP")} and {tip("EDROP")}, {tip("ATT&amp;CK", "MITRE ATT&amp;CK")},
   {tip("MaxMind", "MaxMind")} GeoLite2) refresh daily via {tip("Kestra")}, land in
-  {tip("MotherDuck")} through {tip("dlt")}, and dbt materialises them into the marts this
+  {tip("DuckDB")} through {tip("dlt")}, and dbt materialises them into the marts this
   dashboard reads.</p>
   <p class='tagline' style='margin-top:0.5rem;'>Active {tip("C2", "C2")} servers by
   malware family (hover for context):</p>
@@ -1004,12 +1132,8 @@ with tab_overview:
 
 
 # =============================================================================
-# TAB: LIVE PHISHING STREAM (fragment for optional auto-refresh)
+# TAB: LIVE PHISHING STREAM
 # =============================================================================
-
-
-@st.fragment(run_every=30 if False else None)  # placeholder; rebound below
-def _stream_panel_placeholder() -> None: ...
 
 
 def stream_panel() -> None:
@@ -1020,9 +1144,9 @@ def stream_panel() -> None:
             f"""
 <div class='card'>
   <h3>Suspicious certs over time {BADGE_FILTERED}</h3>
-  <p class='tagline'>Hourly count of flagged certificates. Pink diamonds mark the
-  current hour, which is still in progress and should not be compared against
-  complete hours.</p>
+  <p class='tagline'>Hourly count of flagged certificates. Pink diamonds mark
+  hours with incomplete data: the current hour (still in progress) or boundary
+  hours where the filter range starts or ends mid-hour.</p>
 </div>
 """,
             unsafe_allow_html=True,
@@ -1069,20 +1193,16 @@ def stream_panel() -> None:
     )
 
 
-# st.fragment's run_every takes a string like "30s"; None disables the
-# auto-rerun. We rebind the fragment with a concrete interval so toggling the
-# "Live refresh" switch in the filter bar controls whether this block
-# re-queries MotherDuck every 30 seconds or sits still.
-stream_fragment = st.fragment(run_every="30s" if live else None)(stream_panel)
-
+_perf("before tab_stream")
 with tab_stream:
-    stream_fragment()
+    stream_panel()
 
 
 # =============================================================================
 # TAB: THREAT LANDSCAPE
 # =============================================================================
 
+_perf("before tab_batch (threat landscape)")
 with tab_batch:
     col1, col2 = st.columns([1, 1])
 
@@ -1264,6 +1384,7 @@ with tab_batch:
 # TAB: MAP (scatter_geo)
 # =============================================================================
 
+_perf("before tab_map")
 with tab_map:
     st.markdown(
         f"""
@@ -1446,16 +1567,17 @@ def _tag_link(label: str, url: str) -> str:
     )
 
 
+_perf("before tab_about (stack)")
 with tab_about:
     col1, col2 = st.columns([1, 1])
     with col1:
         st.markdown(
             "<div class='card'>"
             "<h3>Streaming</h3>"
-            "<p class='tagline'>Five always-on Fly.io machines: a self-hosted "
-            "certstream-server-go aggregates the CT firehose, a Python producer "
-            "pushes events to Redpanda Cloud, a detector enriches and windows "
-            "them, a sink lands everything into MotherDuck.</p>"
+            "<p class='tagline'>Five Fly.io machines ran during the capture window: "
+            "a self-hosted certstream-server-go aggregated the CT firehose, a Python "
+            "producer pushed events to Redpanda Cloud, a detector enriched and windowed "
+            "them, a sink landed everything into DuckDB.</p>"
             "<div>"
             + _tag_link("certstream-server-go", "https://github.com/d-Rickyy-b/certstream-server-go")
             + _tag_link("Redpanda Cloud", "https://redpanda.com/")
@@ -1468,8 +1590,8 @@ with tab_about:
             + "</div></div>"
             "<div class='card'>"
             "<h3>Batch</h3>"
-            "<p class='tagline'>Kestra schedules the daily refresh: six dlt "
-            "pipelines load raw feeds into MotherDuck, then dbt transforms "
+            "<p class='tagline'>Kestra scheduled the daily refresh: six dlt "
+            "pipelines loaded raw feeds into DuckDB, then dbt transformed "
             "staging views into pre-aggregated marts that back the dashboard.</p>"
             "<div>"
             + _tag_link("Kestra", "https://kestra.io/")
@@ -1484,12 +1606,8 @@ with tab_about:
             "<div class='card'>"
             "<h3>Dashboard and CI/CD</h3>"
             "<p class='tagline'>Streamlit Cloud hosts this page and reads "
-            "pre-aggregated marts straight from MotherDuck. GitHub Actions runs "
-            "ruff, pytest and dbt parse on every push, and re-deploys the four "
-            "Python services plus Kestra to Fly.io when anything under "
-            "<span class='tag'>streaming/</span>, <span class='tag'>batch/</span>, "
-            "<span class='tag'>kestra/</span> or <span class='tag'>dbt/</span> "
-            "changes.</p>"
+            "pre-aggregated marts from the frozen DuckDB archive. GitHub Actions "
+            "runs ruff, pytest and dbt parse on every push.</p>"
             "<div>"
             + _tag_link("Streamlit Cloud", "https://streamlit.io/cloud")
             + _tag_link("Plotly", "https://plotly.com/python/")
@@ -1520,30 +1638,33 @@ with tab_about:
 # TAB: HEALTH
 # =============================================================================
 
+_perf("before tab_health")
 with tab_health:
-    health = q_pipeline_health().pipe(with_tz)
+    st.markdown(
+        "<p class='card'>"
+        "Pipeline health monitors end-to-end loss in a single hop. "
+        "<strong>WebSocket → Detector</strong>: the certstream producer writes "
+        "<code>producer_volume</code> events with certs received from the CertStream "
+        "firehose; the detector consumes <code>certstream_events</code>, runs "
+        "impersonation checks, and emits aggregate counts per window via "
+        "<code>cert_stats_1min</code>. "
+        "Pipeline is <strong>Healthy</strong> when loss stays at or "
+        "below 1% across the visible window. Sink workers emit a "
+        "<strong>heartbeat</strong> every 60 seconds; staleness signals either a "
+        "frozen consumer or a dead process."
+        "</p>",
+        unsafe_allow_html=True,
+    )
+
+    health = q_pipeline_health(since=since, until=until).pipe(with_tz)
 
     if health.empty:
         st.info("No pipeline health data yet. Start the monitor and sink to populate this view.")
     else:
-        st.markdown(
-            "<p class='card'>"
-            "Every minute, a <strong>volume counter</strong> tallies raw certificates "
-            "entering the CertStream firehose while the <strong>detector</strong> "
-            "classifies and counts them. The difference (lost events) is the gap "
-            "between what arrived and what was processed. "
-            "Pipeline health is <strong>Healthy</strong> when loss stays at or below 1% "
-            "across all recent windows. Sink workers emit a <strong>heartbeat</strong> "
-            "every 60 seconds; staleness signals either a frozen consumer or a dead process."
-            "</p>",
-            unsafe_allow_html=True,
-        )
-
         latest = health.iloc[0]
 
         # ---- KPI row ---------------------------------------------------------
         healthy = bool(latest["is_healthy"])
-        sink_ok = bool(latest["sink_alive"])
 
         def _health_kpi(klass: str, value: str, label: str, tooltip: str) -> str:
             return (
@@ -1555,72 +1676,89 @@ with tab_health:
 
         pipeline_status = "Healthy" if healthy else "Degraded"
         pipeline_klass = "green" if healthy else "pink"
-        sink_status = "Alive" if sink_ok else "Unreachable"
-        sink_klass = "green" if sink_ok else "pink"
 
-        loss_str = f"{latest['loss_pct']:.2f}%"
-        loss_klass = "green" if latest["loss_pct"] <= 1.0 else ("gold" if latest["loss_pct"] <= 5.0 else "pink")
-
-        tz = st.session_state.get("tz", "UTC")
         heartbeat_str = (
             latest["last_heartbeat_at"].strftime(f"%H:%M:%S %Z")
             if pd.notna(latest["last_heartbeat_at"])
             else "never"
         )
 
-        last_volume = f"{int(latest['raw_count']):,}"
+        if ARCHIVE_MODE:
+            sink_status = "Frozen"
+            sink_klass = "violet"
+            sink_tooltip = f"Last: {heartbeat_str}. Pipeline is no longer running; data is a historical snapshot."
+        else:
+            sink_ok = bool(latest["sink_alive"])
+            sink_status = "Alive" if sink_ok else "Unreachable"
+            sink_klass = "green" if sink_ok else "pink"
+            sink_tooltip = f"Last: {heartbeat_str}. Stale after 2 minutes."
+
+        # Single-hop loss
+        ws_loss = latest["ws_to_detector_loss_pct"]
+        if pd.notna(ws_loss):
+            loss_str = f"{ws_loss:.2f}%"
+            loss_klass = "green" if ws_loss <= 1.0 else ("gold" if ws_loss <= 5.0 else "pink")
+        else:
+            loss_str = "n/a"
+            loss_klass = "grey"
+
+        tz_label = st.session_state.get("tz", "UTC")
+
+        last_ws = f"{int(latest['ws_count']):,}" if pd.notna(latest["ws_count"]) else "n/a"
         last_processed = f"{int(latest['processed_count']):,}"
 
         st.markdown(
             "<div class='kpi-grid'>"
-            + _health_kpi(pipeline_klass, pipeline_status, "Pipeline", "Healthy when loss <= 1% across all windows.")
-            + _health_kpi(loss_klass, loss_str, "Event loss", "Percentage of certstream events not accounted for by the detector.")
-            + _health_kpi("cyan", last_volume, "Raw events (last min)", "Certificates seen by the volume counter in the latest window.")
-            + _health_kpi("violet", last_processed, "Processed (last min)", "Certificates processed by the detector in the same window (sum of cert_stats_1min).")
-            + _health_kpi(sink_klass, sink_status, "Sink heartbeat", f"Last: {heartbeat_str}. Stale after 2 minutes.")
-            + _health_kpi("gold", f"{int(latest['lost_events']):,}", "Lost events (last min)", "raw_count − processed_count for the latest window.")
+            + _health_kpi(pipeline_klass, pipeline_status, "Pipeline", "Healthy when loss percentage <= 1%.")
+            + _health_kpi(loss_klass, loss_str, "WS → Detector loss", "WebSocket-to-detector cert loss. n/a if producer_volume events are unavailable.")
+            + _health_kpi("cyan", last_ws, "WS certs (last min)", "Certificates received from CertStream firehose in the latest window.")
+            + _health_kpi("green", last_processed, "Processed (last min)", "Certificates processed by the detector (sum of cert_stats_1min).")
+            + _health_kpi(sink_klass, sink_status, "Sink heartbeat", sink_tooltip)
             + "</div>",
             unsafe_allow_html=True,
         )
 
-        # ---- Volume vs Processed chart ---------------------------------------
+        # ---- Chart -----------------------------------------------------------
         chart_data = health.copy()
         chart_data = chart_data.sort_values("window_ts")
 
         fig = go.Figure()
 
-        fig.add_trace(
-            go.Scatter(
-                x=chart_data["window_ts"],
-                y=chart_data["raw_count"],
-                name="Raw (volume counter)",
-                mode="lines",
-                line=dict(color=ACCENT_CYAN, width=2),
-                fill="tozeroy",
-                fillcolor="rgba(0,229,255,0.06)",
-                hovertemplate="%{y:,} certs<br>%{x}<extra></extra>",
+        # WebSocket certs received
+        if chart_data["ws_count"].notna().any():
+            fig.add_trace(
+                go.Scatter(
+                    x=chart_data["window_ts"],
+                    y=chart_data["ws_count"],
+                    name="WS (producer)",
+                    mode="lines",
+                    line=dict(color=ACCENT_CYAN, width=2),
+                    fill="tozeroy",
+                    fillcolor="rgba(0,229,255,0.06)",
+                    hovertemplate="%{y:,} certs<br>%{x}<extra></extra>",
+                )
             )
-        )
 
+        # Processed by detector
         fig.add_trace(
             go.Scatter(
                 x=chart_data["window_ts"],
                 y=chart_data["processed_count"],
                 name="Processed (detector)",
                 mode="lines",
-                line=dict(color=ACCENT_VIOLET, width=2),
+                line=dict(color=ACCENT_GREEN, width=2),
                 fill="tozeroy",
-                fillcolor="rgba(124,77,255,0.06)",
+                fillcolor="rgba(0,200,83,0.06)",
                 hovertemplate="%{y:,} certs<br>%{x}<extra></extra>",
             )
         )
 
-        # Loss % on secondary y-axis
+        # Loss percentage on secondary y-axis
         fig.add_trace(
             go.Scatter(
                 x=chart_data["window_ts"],
-                y=chart_data["loss_pct"],
-                name="Loss %",
+                y=chart_data["ws_to_detector_loss_pct"],
+                name="WS→Detector loss %",
                 mode="lines",
                 line=dict(color=ACCENT_PINK, width=1.5, dash="dot"),
                 yaxis="y2",
@@ -1633,6 +1771,8 @@ with tab_health:
             y=1.0, line_dash="dash", line_color=ACCENT_GOLD, opacity=0.7,
             annotation_text="1% threshold", annotation_position="bottom right",
         )
+
+        loss_max = chart_data["ws_to_detector_loss_pct"].max() if chart_data["ws_to_detector_loss_pct"].notna().any() else 0
 
         layout = {
             **CHART,
@@ -1647,17 +1787,17 @@ with tab_health:
                 title="Loss %",
                 overlaying="y",
                 side="right",
-                range=[0, max(10, chart_data["loss_pct"].max() * 1.3)],
+                range=[0, max(10, loss_max * 1.3)],
                 gridcolor="rgba(255,255,255,0.02)",
                 zerolinecolor=BORDER,
                 tickformat=".1f",
             ),
             "xaxis": dict(
-                title=f"Window timestamp ({st.session_state.get('tz', 'UTC')})",
+                title=f"Window timestamp ({tz_label})",
                 gridcolor="rgba(255,255,255,0.04)",
                 zerolinecolor=BORDER,
             ),
-            "legend": dict(orientation="h", yanchor="top", y=1.12, xanchor="left", x=0),
+            "legend": dict(orientation="h", yanchor="top", y=1.18, xanchor="left", x=0),
         }
         fig.update_layout(**layout)
 
@@ -1665,7 +1805,7 @@ with tab_health:
 
         st.markdown(
             "<div class='source'>"
-            "mart_pipeline_health &middot; volume_counter → raw_pipeline_events.volume "
+            "mart_pipeline_health &middot; producer_volume (WS) → raw_pipeline_events "
             "+ cert_stats_1min (detector) → processed. "
             "sink_alive from worker heartbeats every 60s."
             "</div>",
@@ -1689,3 +1829,9 @@ st.markdown(
     "</div>",
     unsafe_allow_html=True,
 )
+
+_perf("END of script")
+
+if live:
+    _time.sleep(5)
+    st.rerun()

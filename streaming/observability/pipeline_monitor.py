@@ -93,7 +93,7 @@ class VolumeCounter(threading.Thread):
             execute_with_retry(
                 self._conn,
                 f"INSERT INTO {PIPELINE_EVENTS_TABLE} VALUES (?, 'volume_counter', 'volume', ?::JSON)",
-                [current_minute.isoformat(), json.dumps({"cert_count": self._count, "topic": self.topic})],
+                [self._current_minute.isoformat(), json.dumps({"cert_count": self._count, "topic": self.topic})],
             )
             log.info("volume: %d certs in the last minute", self._count)
             self._total += self._count

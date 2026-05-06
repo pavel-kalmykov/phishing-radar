@@ -49,9 +49,32 @@ models:
   - name: mart_dashboard_kpis
     description: Single-row headline KPIs for the dashboard hero strip
   - name: mart_dashboard_suspicious_hourly
-    description: Hourly volume of flagged certs with partial-hour flag
+    description: Per-hour, per-issuer volume of flagged certs with partial-hour flag
+    columns:
+      - name: hour
+        tests:
+          - not_null
+      - name: issuer_cn
+        tests:
+          - not_null
+      - name: flagged
+      - name: unique_domains
+      - name: is_partial_hour
+  - name: mart_dashboard_brand_daily
+    description: Per-day, per-issuer, per-brand counts for the top-brands chart
+    columns:
+      - name: day
+        tests:
+          - not_null
+      - name: issuer_cn
+        tests:
+          - not_null
+      - name: brand
+        tests:
+          - not_null
+      - name: hits
   - name: mart_dashboard_top_issuers
-    description: Top 20 CAs that signed flagged certs, with counts
+    description: Top 20 CAs that signed flagged certs, with counts (deprecated — superseded by mart_dashboard_suspicious_hourly)
   - name: mart_dashboard_kev_vendors
     description: Top KEV vendors with explicit ransomware ratio percentage
   - name: mart_dashboard_kev_monthly
@@ -60,24 +83,37 @@ models:
     description: C2 counts per country across Feodo + ThreatFox sources
   - name: mart_pipeline_health
     description: >
-      Per-minute pipeline health. Compares certificates entering the firehose
-      (volume counter) against certificates processed by the detector
-      (SUM of cert_stats_1min.count). Also tracks the latest heartbeat from
-      each sink worker. A loss_pct above 1% or a missing heartbeat signals a
-      pipeline issue.
+      Per-minute pipeline health: single hop WebSocket → Detector.
+      certstream_producer ws_cert_count vs detector total_count (summed across
+      issuers). is_healthy requires loss percentage ≤ 1%. sink_alive requires a
+      heartbeat from each sink worker within the last 2 minutes.
     columns:
       - name: window_ts
         tests:
           - not_null
-      - name: raw_count
+      - name: ws_count
+      - name: processed_count
         tests:
           - not_null
-      - name: loss_pct
-        tests:
-          - not_null
+      - name: ws_to_detector_lost
+      - name: ws_to_detector_loss_pct
       - name: is_healthy
         tests:
           - not_null
       - name: sink_alive
         tests:
           - not_null
+  - name: mart_recent_suspicious
+    description: >
+      Last 3 days of suspicious certs, ordered by seen_at_ts DESC. The
+      dashboard reads from this instead of scanning the full staging table
+      with ORDER BY + LIMIT. Refreshed daily; the last hour is covered by
+      a live fallback query.
+    columns:
+      - name: seen_at_ts
+        tests:
+          - not_null
+      - name: primary_domain
+      - name: issuer_cn
+      - name: max_score
+      - name: detections_raw

@@ -1,21 +1,47 @@
 # Phishing Radar
 
-Real-time phishing infrastructure detector. Watches the Certificate Transparency firehose, flags impersonation attempts as they happen, and correlates with active malware intelligence to give each detection operational context.
+Real-time phishing infrastructure detection from Certificate Transparency logs. Flags domain impersonation as certificates are issued and cross-references detections against active malware intelligence (CISA KEV, abuse.ch, Spamhaus, MITRE ATT&CK).
 
-Capstone for the DataTalksClub [Data Engineering Zoomcamp 2026](https://github.com/DataTalksClub/data-engineering-zoomcamp).
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-green.svg)](https://www.python.org/downloads/)
+[![Status: Archive](https://img.shields.io/badge/status-archive%20%24%200%2Fforever-purple.svg)](#archive-mode)
 
-## The story
+**Data capture window:** 2026-04-23 to 2026-05-05. The project ran as a live cloud deployment for 12 days and is now preserved as a frozen, zero-dependency archive. The dashboard is fully explorable with no API keys, no Docker, and no cloud accounts.
 
-Every phishing site needs a TLS certificate. Modern browsers mark non-HTTPS sites as unsafe, so attackers routinely request a certificate for their lookalike domain from Let's Encrypt or any other public CA. Those certificates are published to Certificate Transparency logs within seconds of issuance.
+## Quick start
 
-If you tail that firehose, you see the scam infrastructure while it is being built, before the first phishing email lands in anyone's inbox. Phishing Radar tails it for you.
+```bash
+git clone https://github.com/pavel-kalmykov/phishing-radar.git
+cd phishing-radar
+uv sync
+ARCHIVE_MODE=1 streamlit run dashboard/app.py
+```
 
-**Two questions this project answers:**
+Opens at `http://localhost:8501`. All six tabs work: Overview, Live phishing stream, Threat landscape, Map, Health, Stack. The archive banner indicates the data is frozen; date pickers are locked to the capture range.
+
+## Why this exists
+
+Every phishing site needs a TLS certificate. Browsers flag non-HTTPS sites as unsafe, so attackers request certificates for lookalike domains from Let's Encrypt and other public CAs. Those certificates appear in Certificate Transparency logs within seconds of issuance.
+
+If you tail that firehose, you see scam infrastructure while it is being built, before the first phishing email lands. Phishing Radar tails it and answers two questions:
 
 1. Which brands are being impersonated right now?
-2. Of all the suspicious certificates appearing in the feed, which ones are hosted on infrastructure we already know is bad (active botnet C2, hijacked IP space, vendors with unpatched CVEs being exploited)?
+2. Of the suspicious certificates, which ones are hosted on infrastructure already known to be hostile (active botnet C2s, hijacked IP space, vendors with exploited CVEs)?
 
-## Architecture
+## Dashboard
+
+Six tabs, all reading from pre-aggregated dbt marts in a 97 MB DuckDB snapshot:
+
+| Tab | What it shows |
+|---|---|
+| **Overview** | Top impersonated brands, active C2s by malware family (hover for context), detection volume trend |
+| **Live phishing stream** | Hourly flagged cert volume, top issuing CAs, latest 50 detections with similarity scores |
+| **Threat landscape** | CISA KEV monthly additions, Spamhaus DROP/EDROP breakdown, KEV vendors ranked by ransomware ratio, C2s by country |
+| **Map** | Scatter geo-plot with one marker per country hosting C2 infrastructure, sized by active count, with malware family tooltips |
+| **Health** | End-to-end pipeline loss monitor (WebSocket to detector hop), heartbeat staleness, per-worker throughput |
+| **Stack** | Architecture reference panels for streaming pipeline, batch ingestion, and data sources |
+
+## Architecture (original cloud deployment)
 
 ```mermaid
 flowchart LR
@@ -28,268 +54,82 @@ flowchart LR
         MM[MaxMind GeoLite2]
     end
 
-    subgraph fly[Fly.io apps always-on]
+    subgraph fly[Fly.io apps]
         CS[certstream-server-go]
         PROD[Python producer]
-        DET[PyFlink detector<br/>typosquatting + 1 min windows]
+        DET[PyFlink detector]
         SINK[Kafka to MotherDuck sink]
         KES[Kestra orchestrator]
     end
 
     subgraph cloud[Managed services]
-        RP[(Redpanda Cloud<br/>Kafka broker)]
-        MD[(MotherDuck<br/>DuckDB warehouse)]
+        RP[(Redpanda Cloud)]
+        MD[(MotherDuck)]
         ST[Streamlit Cloud]
     end
 
-    CT --> CS
-    CS -->|WebSocket| PROD
-    PROD -->|certstream_events| RP
-    RP --> DET
-    DET -->|suspicious_certs<br/>cert_stats_1min| RP
-    RP -->|suspicious_certs<br/>cert_stats_1min| SINK
-    SINK --> MD
-
+    CT --> CS -->|WebSocket| PROD -->|certstream_events| RP
+    RP --> DET -->|suspicious_certs| RP --> SINK --> MD
     KEV --> KES
     FEO --> KES
     SPAM --> KES
     MITRE --> KES
     MM --> KES
     KES -->|dlt + dbt| MD
-
     MD --> ST
 ```
 
+The pipeline processed ~200 certificates per second through a PyFlink detector with 1-minute tumbling windows, applying Damerau-Levenshtein and Jaro-Winkler similarity to catch typosquatting and homoglyph attacks against a configured brand list. Detections landed in MotherDuck via a Kafka sink with idempotency guarantees, then 12 dbt marts pre-aggregated the data for the dashboard.
+
+## Archive mode
+
+The cloud deployment ended on 2026-05-05 when managed services (Redpanda Cloud, MotherDuck) expired. The archive preserves every dashboard mart and 134,000 recent detections in a single 97 MB DuckDB file committed to this repository. Set `ARCHIVE_MODE=1` and the dashboard reads it directly with zero external dependencies.
+
 ## Stack
 
-| Layer | Tool | Where it runs |
+| Layer | Tool | Notes |
 |---|---|---|
-| Stream broker | Redpanda Cloud (serverless) | AWS eu-central-1 |
-| Stream processing | PyFlink DataStream (`KafkaSource` + 1-min tumbling event-time windows + `KafkaSink`, embedded MiniCluster) | Fly.io (`phishing-radar-detector`, 1 GB) |
-| Batch ingestion | `dlt` | Fly.io (Kestra tasks) |
-| Orchestration | Kestra | Fly.io |
-| Warehouse | MotherDuck (DuckDB SaaS) | AWS eu-central-1 |
-| Transformations | dbt (`dbt-duckdb`) | Fly.io (Kestra tasks) |
-| Dashboard | Streamlit | Streamlit Cloud |
-| IaC / deploys | `fly.toml` + GitHub Actions | n/a |
-| Language | Python 3.11 (+ `uv`, `ruff`) | n/a |
+| Stream broker | Redpanda (Kafka API) | Cloud during capture; local via Docker for full replay |
+| Stream processing | PyFlink DataStream | 1-min tumbling windows, typosquatting + homoglyph detection |
+| Batch ingestion | dlt | CISA KEV, Feodo, ThreatFox, Spamhaus, MITRE, MaxMind |
+| Orchestration | Kestra | Scheduled batch flows |
+| Warehouse | DuckDB | 17 GB during live runs; 97 MB archive snapshot |
+| Transformations | dbt (dbt-duckdb) | 12 pre-aggregated marts |
+| Dashboard | Streamlit | Archive mode ($0) or local |
 
 ## Data sources
 
-| Source | Type | Cadence | Auth |
-|---|---|---|---|
-| Certificate Transparency logs (via [certstream-server-go](https://github.com/d-Rickyy-b/certstream-server-go)) | WebSocket | ~200 certs/s | None |
-| CISA KEV catalogue | JSON dump | daily | None |
-| abuse.ch Feodo Tracker | JSON dump | minutes | None |
-| abuse.ch ThreatFox | JSON export | minutes | None |
-| Spamhaus DROP / EDROP | TXT | daily | None |
-| MITRE ATT&CK (Enterprise) | STIX 2 JSON | monthly | None |
-| MaxMind GeoLite2 (CSV) | CSV zip | weekly | Free registration |
-
-## Cloud footprint
-
-| Service | Tier | Role |
+| Source | Type | Cadence |
 |---|---|---|
-| Fly.io | 5 machines (3x shared-cpu-1x@256MB for producer / certstream / sink-512MB; 1x shared-cpu-1x@1024MB for the PyFlink detector; 1x@1024MB for Kestra) | Always-on producer, detector, sink, CT stream aggregator, Kestra |
-| Redpanda Cloud | Serverless free cluster | Kafka broker + 3 topics |
-| MotherDuck | Free tier (10 GB) | Warehouse |
-| Streamlit Cloud | Free tier | Dashboard hosting |
+| Certificate Transparency logs (via certstream-server-go) | WebSocket | ~200 certs/s |
+| CISA KEV catalogue | JSON | Daily |
+| abuse.ch Feodo Tracker | JSON | Minutes |
+| abuse.ch ThreatFox | JSON | Minutes |
+| Spamhaus DROP / EDROP | TXT | Daily |
+| MITRE ATT&CK (Enterprise) | STIX 2 JSON | Monthly |
+| MaxMind GeoLite2 | CSV | Weekly |
 
-Expected monthly cost: around 10 EUR (Kestra VM) plus 4 x ~2 EUR for the small always-on machines. Everything else is on free tiers.
+## Running fully local (with live pipeline)
 
-## Latency, throughput and backpressure
-
-The README calls the pipeline "real-time". This section spells out what that means in numbers and where the limits sit.
-
-**End-to-end latency**, from a CA publishing a certificate to it appearing in the dashboard:
-
-| Hop | Typical | Worst case |
-|---|---|---|
-| CT log entry to `certstream-server-go` | ms | seconds |
-| `certstream-server-go` to producer WebSocket | ms | seconds (reconnect window: up to 60 s) |
-| Producer batch (`linger.ms=50`, `acks=all`) | 50 to 200 ms | seconds (broker slow) |
-| Broker to detector consumer poll | ms | seconds |
-| Detector tumbling window emit | up to 60 s | up to 60 s (window granularity) |
-| Sink poll + flush (`BATCH_SIZE=500`, `FLUSH_SECONDS=10`) | 1 to 10 s | 10 s (idle flush) |
-| Streamlit cache TTL (live tier) | 0 to 60 s | 60 s |
-
-Median observed latency in production: about 60 s. Floor is the detector window plus the sink flush, so anything below 30 s is not achievable without redesign.
-
-**Throughput observed**:
-
-- CT firehose: ~200 certs/s sustained, peaks to ~500 certs/s.
-- Producer to Kafka: ~1 to 2 MB/s after zstd compression, far below broker capacity.
-- Detector: ~5,000 to 20,000 certs/window evaluated, ~1,000 to 1,500 suspicious certs/min emitted at peak hours.
-- Sink to MotherDuck: 50 to 200 inserts/s during normal operation; drained 100k+ message backlogs at 1,500 rows/s.
-
-**Backpressure**:
-
-- Producer side: librdkafka holds an in-process queue (`queue.buffering.max.messages` default 100k). When the broker is slow, `produce()` blocks the asyncio task that reads the WebSocket. The upstream `certstream-server-go` then either buffers or drops on its end; we do not control that.
-- Sink side: the consumer poll has a 1 s timeout, the buffer is bounded by `SINK_BATCH_SIZE` (default 500) and flushes are time-bounded by `SINK_FLUSH_SECONDS` (default 10). If MotherDuck is slow, the consumer naturally lags behind its committed offset; offsets advance only after a successful flush, so at-least-once delivery survives a sink crash mid-batch (the next run replays).
-
-**No circuit breaker.** The detector does not shed load when input rate exceeds the rate it can fingerprint and emit. We rely on the bounded per-window state and on Kafka acting as the disk-backed buffer ahead of the consumer. If the detector falls permanently behind, the topic retains messages up to the cluster retention (24 h on the Redpanda Cloud serverless plan) and the dashboard freshness alert fires (`dbt source freshness`).
-
-**Known stress points** (already on the work list):
-
-- Sink consumer freeze: the consumer occasionally stops polling without crashing the process. The auto-restart health check ([`A13`](#known-limitations)) detects no flushes for N minutes and exits, letting Fly restart the machine.
-- Multi-topic fair-share: a single Kafka consumer subscribed to three topics is not strictly fair-share across topics in librdkafka. With a multi-million-row certstream backlog, `suspicious_certs` can lag. Mitigation: `fetch.max.partition.bytes` tuning, or split into per-topic consumers.
-
-## Data warehouse notes (for reviewers)
-
-> [!NOTE]
-> The course rubric asks for "tables partitioned and clustered in a way that
-> makes sense for the upstream queries (with explanation)". MotherDuck (DuckDB)
-> doesn't expose BigQuery-style `PARTITION BY` / `CLUSTER BY` clauses, so this
-> section explains the equivalent story.
-
-- **Storage format.** DuckDB persists tables as columnar blocks with zone maps
-  and dictionary encoding per column. That's the native "clustering":
-  predicate pushdown uses min/max stats at the block level, so filters on
-  `seen_at_ts`, `country`, `malware_family`, `vendor`, `issuer_cn`, `date_added`
-  (the columns the dashboard actually filters by) skip blocks the same way a
-  BigQuery clustered table skips micropartitions.
-- **Size matters.** The marts are tiny. `mart_dashboard_kpis` is one row,
-  `mart_dashboard_c2_by_country` is 22 rows, `mart_dashboard_kev_vendors` is
-  20 rows, etc. Partitioning a 20-row table buys nothing. The biggest table is
-  `geoip_city_blocks` at ~3.7M rows, which is already range-partitioned
-  implicitly by CIDR (the IP-range join in `stg_geoip_city` uses a `between`
-  filter against the `start_int`/`end_int` columns; DuckDB's zone maps make
-  this linear scan effectively a range scan).
-- **Materialisation strategy.** Every dashboard query reads from
-  `table`-materialised marts (persisted) rather than views, so the reads don't
-  recompute on every page refresh. See `dbt/models/marts/mart_dashboard_*.sql`
-  for the pre-aggregated layer.
-- **What we'd do at 100x scale.** If the `raw_suspicious_certs` table grew to
-  hundreds of millions of rows, we would partition the raw landing table by
-  `date(received_at)` (DuckDB supports this via multi-file storage / Hive
-  partitioning for Parquet), and cluster the per-brand mart by `(brand, day)`.
-  At our current working set (~4k suspicious certs/day) the marts fit in a few
-  KB and any partitioning would be ceremony.
-
-## Running it locally
-
-### What you need
-
-**Tooling** (one-time install):
-
-| Tool | Install | Why |
-|---|---|---|
-| Python 3.11+ | your OS package manager or [pyenv/mise](https://github.com/jdx/mise) | runtime for every Python service |
-| [`uv`](https://docs.astral.sh/uv/) | `curl -LsSf https://astral.sh/uv/install.sh \| sh` (or `brew install uv`) | Python deps + virtualenv |
-| Docker (+ Compose v2) | [Docker Desktop](https://docs.docker.com/get-docker/) | local Redpanda, certstream-server-go, Kestra |
-| [`just`](https://github.com/casey/just) | `brew install just` / `cargo install just` / `scoop install just` | cross-OS task runner |
-
-**Credentials** (free-tier, copy into `.env` after `cp .env.example .env`):
-
-| Variable | Where to get it | Required for |
-|---|---|---|
-| `MOTHERDUCK_TOKEN` | free account at <https://motherduck.com/> | any step that writes to or reads from MotherDuck (sink, dbt, dashboard) |
-| `MAXMIND_LICENSE_KEY` (+ `MAXMIND_ACCOUNT_ID`) | free registration at <https://www.maxmind.com/en/geolite2/signup> | `batch/ingest_maxmind.py` only (rest of the pipeline runs fine without it; the C2 map just falls back to country-level) |
-| `KAFKA_BOOTSTRAP`, `KAFKA_SASL_*` | free serverless cluster at <https://redpanda.com/> | optional: only needed if you want to reach a cloud broker. For local work, leave the SASL vars empty and the producer/sink talk to the local Redpanda Docker container at `localhost:9092` |
-| `FLY_ACCESS_TOKEN`, `FLY_ORG` | <https://fly.io/> (needs a payment method, but free credit covers the small machines used here) | deploys only; not needed to run locally |
-
-Nothing else is required. CISA KEV, abuse.ch Feodo, abuse.ch ThreatFox, Spamhaus and MITRE ATT&CK feeds are all anonymous (no API keys) and pulled directly over HTTPS.
-
-> [!NOTE]
-> **Reproducibility.** `pyproject.toml` declares dependencies with `>=` floors so the project can pick up patch releases. The exact, deterministic dependency tree lives in `uv.lock` (committed to the repo). `just setup` runs `uv sync --frozen` under the hood, which reuses the lockfile verbatim and never resolves new versions silently. Refresh the lock with `uv lock --upgrade` only when you intend to bump.
-
-### Bring everything up
+If you want to run the full pipeline with a live CertStream feed, you need Docker, Python 3.11+, `uv`, and `just`:
 
 ```bash
-cp .env.example .env        # fill MOTHERDUCK_TOKEN, optionally MAXMIND_LICENSE_KEY
-just setup                   # install Python deps with uv
-just up                      # docker-compose starts Redpanda + certstream-server-go locally
-just producer &              # CertStream -> Kafka producer
-just detect &                # typosquatting detector
-just sink &                  # Kafka -> MotherDuck
-just batch                   # one-shot ingestion of CISA KEV, Feodo, Spamhaus, MITRE, MaxMind
-just dbt-run                 # transformations
-just dashboard               # Streamlit at localhost:8501
-```
-
-Local consoles:
-
-- Redpanda console: http://localhost:8082
-- CertStream server: http://localhost:8090
-- Streamlit dashboard: http://localhost:8501
-
-## Running fully local (no cloud accounts needed)
-
-You can run the entire pipeline with zero cloud dependencies. The warehouse becomes a DuckDB file on disk (`data/local.duckdb`) and Kafka stays in the local Redpanda container. No MotherDuck token, no Redpanda Cloud cluster, no Fly.io, no Streamlit Cloud.
-
-**What you need**: Docker, Python 3.11+, `uv`, `just` (see the table above).
-
-```bash
-cp .env.example .env            # no need to fill anything; MOTHERDUCK_TOKEN can stay empty
-just setup                       # install Python deps
+cp .env.example .env            # no cloud tokens needed
+just setup                       # Python deps
 just up-local                    # docker-compose: Redpanda + certstream + Kestra
-```
 
-Set `DATABASE_URL` to tell every service to use a local DuckDB file instead of MotherDuck:
-
-```bash
 export DATABASE_URL=data/local.duckdb
 
-just producer &                  # CertStream -> local Redpanda
+just producer &                  # CertStream to local Redpanda
 just detect &                    # PyFlink detector (needs JDK 17)
-just sink &                      # Kafka -> local DuckDB
-just monitor &                   # Observability: volume counter + heartbeats
-just batch                       # one-shot: CISA KEV, Feodo, Spamhaus, MITRE, MaxMind
-just dbt-run-local               # dbt transformations against local DuckDB
+just sink &                      # Kafka to local DuckDB
+just monitor &                   # Observability
+just batch                       # one-shot batch ingestion
+just dbt-run-local               # dbt transforms
 just dashboard                   # Streamlit at localhost:8501
 ```
 
-`DATABASE_URL` accepts any DuckDB-compatible connection string: a local path (`data/local.duckdb`), an `md:` prefix for MotherDuck, an `s3://` URL for object storage, etc. The sink, dashboard and dbt all pass it straight to `duckdb.connect()` without interpreting it.
-
-The same pattern works per-service if you only want to test one piece:
-
-```bash
-DATABASE_URL=data/local.duckdb just sink
-DATABASE_URL=data/local.duckdb just dbt-run-local
-DATABASE_URL=data/local.duckdb just dashboard
-```
-
-When `DATABASE_URL` is not set, every service falls back to the original MotherDuck connection (`MOTHERDUCK_TOKEN` + `md:` catalog), so the cloud deployment is unaffected.
-
-## Deploy to cloud
-
-```bash
-flyctl apps create phishing-radar-certstream
-flyctl apps create phishing-radar-producer
-flyctl apps create phishing-radar-detector
-flyctl apps create phishing-radar-sink
-flyctl apps create phishing-radar-kestra
-
-# Secrets (replace values)
-flyctl secrets set --app phishing-radar-producer KAFKA_BOOTSTRAP=... KAFKA_SASL_MECHANISM=SCRAM-SHA-256 KAFKA_SASL_USERNAME=... KAFKA_SASL_PASSWORD=...
-flyctl secrets set --app phishing-radar-detector KAFKA_BOOTSTRAP=... KAFKA_SASL_MECHANISM=SCRAM-SHA-256 KAFKA_SASL_USERNAME=... KAFKA_SASL_PASSWORD=...
-flyctl secrets set --app phishing-radar-sink     KAFKA_BOOTSTRAP=... KAFKA_SASL_MECHANISM=SCRAM-SHA-256 KAFKA_SASL_USERNAME=... KAFKA_SASL_PASSWORD=... MOTHERDUCK_TOKEN=...
-flyctl secrets set --app phishing-radar-kestra   KAFKA_BOOTSTRAP=... KAFKA_SASL_MECHANISM=SCRAM-SHA-256 KAFKA_SASL_USERNAME=... KAFKA_SASL_PASSWORD=... MOTHERDUCK_TOKEN=... MAXMIND_LICENSE_KEY=...
-
-# Deploy
-flyctl deploy --config deploy/certstream/fly.toml --app phishing-radar-certstream --ha=false
-flyctl deploy --config deploy/producer/fly.toml   --app phishing-radar-producer   --dockerfile Dockerfile --ha=false
-flyctl deploy --config deploy/detector/fly.toml   --app phishing-radar-detector   --dockerfile Dockerfile --ha=false
-flyctl deploy --config deploy/sink/fly.toml       --app phishing-radar-sink       --dockerfile Dockerfile --ha=false
-flyctl volumes create kestra_data --region cdg --size 1 --app phishing-radar-kestra
-flyctl deploy --config deploy/kestra/fly.toml     --app phishing-radar-kestra     --ha=false
-```
-
-The `.github/workflows/deploy.yml` GitHub Action redeploys the four services on every push to `main`, but the workflow targets the `production` GitHub environment. Configure that environment under repo *Settings → Environments → production* with at least one required reviewer (yourself). Pushes will queue the deploy and wait for an explicit approval click before any `flyctl deploy` runs, so a typo on main cannot silently redeploy four apps in seconds.
-
-## Dashboard
-
-Hosted: **<https://phishing-radar.streamlit.app>** (after you connect Streamlit Cloud to the GitHub repo and set the `MOTHERDUCK_TOKEN` secret).
-
-Single page with a global filter bar (date range, brand, issuing CA, live refresh toggle) and five tabs:
-
-1. **Overview**: top impersonated brands in the selected window, active C2s by malware family (hover a bar for a one-line context tooltip).
-2. **Live phishing stream**: hourly volume of flagged certs with the current partial hour flagged, top issuing CAs, latest 50 certificates. Toggling "Live refresh" wraps the tab body in a `st.fragment(run_every="30s")` so it re-queries MotherDuck every half minute without touching the rest of the page.
-3. **Threat landscape**: KEV monthly additions (current month rendered translucent so it isn't compared against complete months), Spamhaus DROP/EDROP buckets, KEV vendors with a ransomware-ratio colour scale, active C2s by hosting country.
-4. **Map**: a `scatter_geo` world map with one dot per country where we see a C2. Dot size is active C2 count, colour is the count gradient, tooltip includes the dominant malware family and a one-liner description.
-5. **Stack**: pipeline, batch and data-source reference panels.
-
-Every widget reads from pre-aggregated marts (`mart_dashboard_kpis`, `mart_dashboard_suspicious_hourly`, `mart_dashboard_top_issuers`, `mart_dashboard_kev_vendors`, `mart_dashboard_kev_monthly`, `mart_dashboard_c2_by_country`) so the page stays fast even as the raw tables grow.
+The full setup writes to `data/local.duckdb` (expect it to grow to tens of GB over days). The archive snapshot was extracted from the same pipeline after the 12-day capture window.
 
 ## Repository layout
 
@@ -297,17 +137,18 @@ Every widget reads from pre-aggregated marts (`mart_dashboard_kpis`, `mart_dashb
 .
 ├── batch/                    # dlt pipelines (one module per source)
 ├── dashboard/                # Streamlit app
-├── dbt/                      # dbt project (duckdb adapter, MotherDuck target)
-├── deploy/                   # fly.toml per Fly app
+├── data/                     # archive.duckdb (97 MB, committed)
+├── dbt/                      # dbt project (models, tests, macros)
+├── deploy/                   # fly.toml per Fly app (historical)
 ├── kestra/flows/             # Kestra flow definitions (YAML)
 ├── streaming/
-│   ├── producer/             # CertStream -> Kafka
-│   ├── flink/                # PyFlink job (deployed) + detection logic + no-Java fallback
-│   ├── sink/                 # Kafka -> MotherDuck + idempotency + retention
-│   └── observability/        # Pipeline monitor (volume counter, heartbeats, watchdog)
+│   ├── producer/             # CertStream to Kafka
+│   ├── flink/                # PyFlink detection job
+│   ├── sink/                 # Kafka to DuckDB with idempotency
+│   └── observability/        # Pipeline health monitor
 ├── tests/                    # pytest suite
 ├── Dockerfile                # single image for all Python services
-├── docker-compose.yml        # Redpanda + certstream-server-go + Kestra for local dev
+├── docker-compose.yml        # Redpanda + certstream + Kestra
 ├── justfile                  # cross-OS task runner
 ├── pyproject.toml
 └── README.md
@@ -315,25 +156,22 @@ Every widget reads from pre-aggregated marts (`mart_dashboard_kpis`, `mart_dashb
 
 ## Tests and quality
 
-- `pytest` covers the typosquatting detector and every batch ingester parser (26 assertions across 2 files: detector heuristics, retry/backoff session, mocked HTTP responses for cisa_kev, feodo, threatfox, spamhaus, mitre).
-- `ruff check` in CI.
-- `dbt test` runs 13 schema tests plus 3 singular tests (IP format sanity, pipeline health, and base models not empty).
-- Detector design note: `docs/detection_alternatives.md` explains why we moved from Levenshtein to Damerau-Levenshtein + Jaro-Winkler and why MinHash was considered then dropped for this workload.
-- Memory footprint and right-sizing rationale: `docs/memory_profile.md` (observed RSS peaks per service, how to reproduce with `memray`, why `MALLOC_ARENA_MAX` is not used).
-- CI workflow at `.github/workflows/ci.yml`.
+- **pytest**: 26 assertions covering the typosquatting detector and every batch ingester parser (retry/backoff, mocked HTTP responses).
+- **dbt**: 13 schema tests + 3 singular tests (IP format sanity, pipeline health invariants, base models not empty).
+- **ruff**: linting in CI.
+- **Detector design**: `docs/detection_alternatives.md` documents the migration from Levenshtein to Damerau-Levenshtein + Jaro-Winkler, and why MinHash was dropped.
+- **Memory profiling**: `docs/memory_profile.md` records RSS peaks per service and right-sizing decisions.
 
 ## Known limitations
 
-These are intentional trade-offs, not bugs. The portfolio version of the project keeps the architecture honest about what it does and does not guarantee.
+These are intentional trade-offs:
 
-- **At-least-once delivery, not exactly-once.** The Kafka producer is configured with `acks=all` and idempotence, but the sink commits Kafka offsets after a MotherDuck flush. If the sink is killed between flush and commit, the next run replays the last batch and dedup happens at the mart layer (`select distinct ...`). Acceptable for analytics use; not safe for billing.
-- **Detection latency floor.** The detector uses 1-minute tumbling windows to keep state bounded and emit deterministic stats. In practice a suspicious cert appears in the dashboard 60 to 120 seconds after the CA published it. That is "near real-time"; it is not sub-second.
-- **CT firehose loss.** We rely on `certstream-server-go` as the upstream WebSocket aggregator. If the producer disconnects (keepalive timeout, transient network), events emitted during the gap are not replayed. Reconnect logic is in place; replay is not.
-- **Single-instance services.** Each Fly app runs one machine. No leader election, no HA. Recovery depends on Fly's restart policy and on the auto-restart health check that detects consumer freezes. A region outage takes the pipeline down until a manual fly redeploy.
-- **Brand allowlist is the detection scope.** The detector only flags impersonation against brands declared in the configuration (`STREAMING_BRAND_LIST_PATH`). Adding a brand requires editing the YAML and a redeploy. Anything outside the list is invisible to this pipeline by design.
-- **GeoLite2 accuracy.** GeoLite2-City is free, not commercial-grade. Some IPs only resolve to country level; city resolution is imprecise. The dashboard map jitters identical lat/lon by ±0.3° to keep co-located markers visible, which is honest about the source's resolution.
-- **Detector horizontal scaling.** The deployed detector runs PyFlink with `parallelism=1` against an embedded MiniCluster sized for the firehose we observe. Going beyond a single TaskManager slot would require splitting the JobManager and the TaskManagers into separate Fly machines, which is an architectural change rather than a config tweak.
-- **Streamlit cache vs. live data.** TTLs are tiered to match the cadence of each source: streaming-derived widgets (KPIs, suspicious-cert slices) cache for 60 s, slower-moving aggregates (KEV, Spamhaus, C2) cache for 5 minutes, and filter dropdowns cache for 10 minutes. The "live stream" tab adds an `st.fragment(run_every="30s")` on top so it re-queries every half minute when toggled. KPI values can therefore lag the detector by up to one cache window.
+- **At-least-once, not exactly-once.** The sink commits Kafka offsets after a DuckDB flush. If killed between flush and commit, the next run replays and dedup happens at the mart layer. Fine for analytics; not safe for billing.
+- **Detection latency floor.** 1-minute tumbling windows keep state bounded. A cert appears in the dashboard 60-120 seconds after issuance. Near real-time, not sub-second.
+- **CT firehose gaps.** If the producer disconnects from the WebSocket, events during the gap are not replayed. Reconnect logic exists; replay does not.
+- **Single-instance services.** Each Fly app ran one machine. No HA, no leader election. Recovery depended on Fly's restart policy.
+- **Brand allowlist scope.** The detector only flags impersonation against configured brands (`STREAMING_BRAND_LIST_PATH`). Anything outside the list is invisible by design.
+- **GeoLite2 accuracy.** Free tier, not commercial-grade. Some IPs resolve only to country level. The map jitters co-located markers to be honest about resolution.
 
 ## License
 
