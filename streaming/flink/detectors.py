@@ -1,14 +1,18 @@
 """Typosquatting detection heuristics.
 
 Given a domain, decide if it looks like a phishing impersonation of a known brand.
-Three signals, from cheapest to most specific:
+Four rules, from strongest to weakest:
 
-1. Exact brand substring in a non-canonical position (e.g. `paypal-login.com`).
-2. Levenshtein distance <= 2 against a brand label, on the second-level domain.
-3. Homoglyph substitution (1 -> l, 0 -> o) normalized before comparison.
+1. Homoglyph substitution (`paypa1.com`, `goog1e.com`): the second-level domain
+   equals a brand after we normalise digits that are visually similar to letters
+   (`1 -> l`, `0 -> o`, `5 -> s`, etc.). Score 3.
+2. Brand appears as a substring of a hostname label other than the TLD
+   (`login-paypal-secure.example.net`, `microsoft-support.org`). Score 2.
+3. Levenshtein distance 1..2 between the second-level domain and a brand, after
+   homoglyph normalisation (`paypa-l.com`, `amaz0n.com`). Score 3 - dist + 1.
 
-Returns the matched brand and the reason, or None. Kept pure so Flink / dbt /
-pytest can all call it.
+Returns the matched brand + reason, or None. Pure function: the Flink/Python
+detector job, dbt, and pytest all call it.
 """
 from __future__ import annotations
 
@@ -18,7 +22,7 @@ from rapidfuzz.distance import Levenshtein
 
 from .brands import POPULAR_BRANDS
 
-# Canonical domains we never flag against themselves
+# Canonical domains never flagged against themselves
 CANONICAL_DOMAINS: frozenset[str] = frozenset({
     f"{b}.com" for b in POPULAR_BRANDS
 } | {
@@ -52,8 +56,17 @@ def _is_canonical(domain: str) -> bool:
     return any(domain == c or domain.endswith("." + c) for c in CANONICAL_DOMAINS)
 
 
+def _labels_without_tld(domain: str) -> list[str]:
+    """Strip the TLD (last label). `login-paypal.example.net` -> `[login-paypal, example]`."""
+    domain = domain.lower().lstrip("*.").strip(".")
+    parts = [p for p in domain.split(".") if p]
+    return parts[:-1] if len(parts) >= 2 else parts
+
+
 def detect(domain: str) -> Detection | None:
-    if not domain or _is_canonical(domain):
+    if not domain:
+        return None
+    if _is_canonical(domain):
         return None
 
     sld = _second_level(domain)
@@ -61,25 +74,31 @@ def detect(domain: str) -> Detection | None:
         return None
 
     sld_norm = sld.translate(HOMOGLYPHS)
-    full_norm = domain.lower().translate(HOMOGLYPHS)
+    labels = _labels_without_tld(domain)
+    labels_norm = [label.translate(HOMOGLYPHS) for label in labels]
 
     for brand, category in POPULAR_BRANDS.items():
+        # The domain is exactly the brand on its own SLD: leave it alone.
         if sld == brand:
-            continue  # exact match to brand label alone is treated as canonical
+            continue
 
-        # Rule 1: brand appears as a full label in the hostname (not as TLD/SLD match)
-        labels = [lbl for lbl in full_norm.split(".") if lbl]
-        if brand in labels and labels[-2:-1] != [brand]:
-            return Detection(brand, category, "brand_as_label", score=3)
+        # Rule 1: homoglyph attack. The raw SLD looks like the brand once digits
+        # are normalised. Covers paypa1, goog1e, micr0soft, etc.
+        if sld_norm == brand and sld != brand:
+            return Detection(brand, category, "homoglyph", score=3)
 
-        # Rule 2: Levenshtein distance 1..2 on SLD
-        if 1 <= len(sld) <= 30 and sld != brand:
+        # Rule 2: brand appears as a substring of any hostname label (other than
+        # the TLD). Catches login-paypal-secure.example.net, microsoft-support.org
+        # and amaz0n-login.net (because amaz0n normalises to amazon).
+        for lbl in labels_norm:
+            if brand != lbl and brand in lbl:
+                return Detection(brand, category, "brand_as_label", score=2)
+
+        # Rule 3: fuzzy match on the SLD itself (handles single-letter typos like
+        # paypa-l, amzaon, etc.).
+        if 3 <= len(sld_norm) <= 30:
             dist = Levenshtein.distance(sld_norm, brand, score_cutoff=2)
             if 1 <= dist <= 2:
                 return Detection(brand, category, f"lev_{dist}", score=3 - dist + 1)
-
-        # Rule 3: brand appears as a substring of SLD (paypal-security)
-        if brand in sld_norm and brand != sld_norm:
-            return Detection(brand, category, "brand_substring", score=2)
 
     return None
