@@ -31,13 +31,13 @@ import streamlit as st
 _ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
 load_dotenv(_ENV_PATH)
 
-MD_CATALOG = os.getenv("MD_CATALOG", "phishing_radar")
-MD_DATABASE = os.getenv("MD_DATABASE", "main")
+DB_CATALOG = os.getenv("DB_CATALOG", "phishing_radar")
+DB_SCHEMA = os.getenv("DB_SCHEMA", "main")
 DATABASE_URL = os.getenv("DATABASE_URL")
 ARCHIVE_MODE = os.getenv("ARCHIVE_MODE", "0") == "1"
 
 if ARCHIVE_MODE:
-    MD_DATABASE = "main"
+    DB_SCHEMA = "main"
 
 _T0 = _time.time()
 
@@ -82,7 +82,7 @@ def get_conn() -> duckdb.DuckDBPyConnection:
             token = st.secrets["MOTHERDUCK_TOKEN"]
         except Exception as e:
             raise RuntimeError("MOTHERDUCK_TOKEN not set in env or Streamlit secrets") from e
-    return duckdb.connect(f"md:{MD_CATALOG}?motherduck_token={token}")
+    return duckdb.connect(f"md:{DB_CATALOG}?motherduck_token={token}")
 
 
 def run_query(sql: str, params: tuple | None = None) -> pd.DataFrame:
@@ -547,7 +547,7 @@ def malware_tooltip(family: str | None) -> str:
 
 @st.cache_data(ttl=LIVE_TTL)
 def q_kpis() -> dict[str, Any]:
-    df = run_query(f"select * from {MD_DATABASE}.mart_dashboard_kpis")
+    df = run_query(f"select * from {DB_SCHEMA}.mart_dashboard_kpis")
     if df.empty:
         return {}
     return df.iloc[0].to_dict()
@@ -561,8 +561,8 @@ def q_c2_by_country() -> pd.DataFrame:
         select b.country,
                coalesce(max(a.country_name), b.country) as country_name,
                b.active_c2, b.distinct_families, b.top_family, b.sources
-        from {MD_DATABASE}.mart_dashboard_c2_by_country b
-        left join {MD_DATABASE}.mart_c2_active a on a.country = b.country
+        from {DB_SCHEMA}.mart_dashboard_c2_by_country b
+        left join {DB_SCHEMA}.mart_c2_active a on a.country = b.country
         group by b.country, b.active_c2, b.distinct_families, b.top_family, b.sources
         order by b.active_c2 desc
     """)
@@ -574,7 +574,7 @@ def q_c2_active_rows() -> pd.DataFrame:
         select ip_address, port, malware_family, country, country_name,
                city_name, latitude, longitude, accuracy_radius,
                as_name, source, first_seen, last_seen
-        from {MD_DATABASE}.mart_c2_active
+        from {DB_SCHEMA}.mart_c2_active
         order by last_seen desc nulls last
     """)
 
@@ -583,7 +583,7 @@ def q_c2_active_rows() -> pd.DataFrame:
 def q_c2_by_malware() -> pd.DataFrame:
     return run_query(f"""
         select malware_family, count(*) as active_c2
-        from {MD_DATABASE}.mart_c2_active
+        from {DB_SCHEMA}.mart_c2_active
         where malware_family is not null
         group by 1 order by active_c2 desc
     """)
@@ -591,17 +591,17 @@ def q_c2_by_malware() -> pd.DataFrame:
 
 @st.cache_data(ttl=BATCH_TTL)
 def q_kev_monthly() -> pd.DataFrame:
-    return run_query(f"select * from {MD_DATABASE}.mart_dashboard_kev_monthly")
+    return run_query(f"select * from {DB_SCHEMA}.mart_dashboard_kev_monthly")
 
 
 @st.cache_data(ttl=BATCH_TTL)
 def q_kev_vendors() -> pd.DataFrame:
-    return run_query(f"select * from {MD_DATABASE}.mart_dashboard_kev_vendors")
+    return run_query(f"select * from {DB_SCHEMA}.mart_dashboard_kev_vendors")
 
 
 @st.cache_data(ttl=BATCH_TTL)
 def q_spamhaus_buckets() -> pd.DataFrame:
-    return run_query(f"select * from {MD_DATABASE}.mart_spamhaus_by_country")
+    return run_query(f"select * from {DB_SCHEMA}.mart_spamhaus_by_country")
 
 
 # All filtered queries read from pre-aggregated marts.  The only query that
@@ -611,7 +611,7 @@ def q_spamhaus_buckets() -> pd.DataFrame:
 
 
 @st.cache_data(ttl=LIVE_TTL)
-def q_suspicious_hourly(since: datetime, until: datetime, issuer: str | None) -> pd.DataFrame:
+def q_suspicious_1h(since: datetime, until: datetime, issuer: str | None) -> pd.DataFrame:
     clauses = ["hour between ? and ?"]
     params: list[Any] = [since, until]
     if issuer and issuer != "(all)":
@@ -622,7 +622,26 @@ def q_suspicious_hourly(since: datetime, until: datetime, issuer: str | None) ->
         select hour,
                sum(flagged) as flagged,
                bool_or(is_partial_hour) as is_partial_hour
-        from {MD_DATABASE}.mart_dashboard_suspicious_hourly
+        from {DB_SCHEMA}.mart_dashboard_suspicious_1h
+        where {" and ".join(clauses)}
+        group by hour order by hour
+    """,
+        tuple(params),
+    )
+
+
+@st.cache_data(ttl=LIVE_TTL)
+def q_suspicious_5min(since: datetime, until: datetime, issuer: str | None) -> pd.DataFrame:
+    clauses = ["minute >= ? and minute < ?"]
+    params: list[Any] = [since, until]
+    if issuer and issuer != "(all)":
+        clauses.append("issuer_cn = ?")
+        params.append(issuer)
+    return run_query(
+        f"""
+        select date_trunc('hour', minute) as hour,
+               sum(flagged) as flagged
+        from {DB_SCHEMA}.mart_dashboard_suspicious_5min
         where {" and ".join(clauses)}
         group by hour order by hour
     """,
@@ -640,7 +659,7 @@ def q_top_brands(since: datetime, until: datetime, issuer: str | None) -> pd.Dat
     return run_query(
         f"""
         select brand, sum(hits) as hits
-        from {MD_DATABASE}.mart_dashboard_brand_daily
+        from {DB_SCHEMA}.mart_dashboard_brand_daily
         where {" and ".join(clauses)}
         group by brand order by hits desc limit 15
     """,
@@ -664,7 +683,7 @@ def _q_recent_suspicious_base(
     return run_query(
         f"""
         select seen_at_ts, primary_domain, issuer_cn, max_score
-        from {MD_DATABASE}.mart_recent_suspicious
+        from {DB_SCHEMA}.mart_recent_suspicious
         where {" and ".join(clauses)}
         order by seen_at_ts desc limit 50
     """,
@@ -688,7 +707,7 @@ def q_recent_suspicious(since: datetime, until: datetime, brand: str | None, iss
     delta = run_query(
         f"""
         select seen_at_ts, primary_domain, issuer_cn, max_score
-        from {MD_DATABASE}.mart_recent_suspicious
+        from {DB_SCHEMA}.mart_recent_suspicious
         where {" and ".join(clauses)}
         order by seen_at_ts desc limit 50
     """,
@@ -706,7 +725,7 @@ def q_top_issuers(since: datetime, until: datetime) -> pd.DataFrame:
     return run_query(
         f"""
         select issuer_cn as issuer, sum(flagged) as hits
-        from {MD_DATABASE}.mart_dashboard_suspicious_hourly
+        from {DB_SCHEMA}.mart_dashboard_suspicious_1h
         where hour between ? and ?
         group by issuer_cn order by hits desc limit 12
     """,
@@ -721,7 +740,7 @@ def q_filter_options() -> dict[str, list[str]]:
         where brand is not null order by brand
     """)["brand"].tolist()
     issuers = run_query(f"""
-        select issuer from {MD_DATABASE}.mart_dashboard_top_issuers
+        select issuer from {DB_SCHEMA}.mart_dashboard_top_issuers
         where issuer != '(unknown)' order by hits desc limit 20
     """)["issuer"].tolist()
     return {"brands": brands, "issuers": issuers}
@@ -734,7 +753,7 @@ def q_pipeline_health(since: datetime, until: datetime) -> pd.DataFrame:
         select window_ts, ws_count, processed_count,
                ws_to_detector_lost, ws_to_detector_loss_pct,
                last_heartbeat_at, is_healthy, sink_alive
-        from {MD_DATABASE}.mart_pipeline_health
+        from {DB_SCHEMA}.mart_pipeline_health
         where window_ts between ? and ?
         order by window_ts desc
         """,
@@ -860,24 +879,30 @@ _perf("after q_filter_options")
 _archive_min = None
 _archive_max = None
 
-if ARCHIVE_MODE:
-    _archive_range = run_query("""
-        SELECT MIN(ts) AS min_ts, MAX(ts) AS max_ts FROM (
-            SELECT hour AS ts FROM mart_dashboard_suspicious_hourly
-            UNION ALL
-            SELECT seen_at_ts AS ts FROM mart_recent_suspicious
-        )
-    """)
-    if not _archive_range.empty:
-        _archive_min = _archive_range["min_ts"].iloc[0].to_pydatetime()
-        _archive_max = _archive_range["max_ts"].iloc[0].to_pydatetime()
-    else:
-        _archive_min = datetime.now() - timedelta(days=7)
-        _archive_max = datetime.now()
-    default_since = _archive_min
-    default_until = _archive_max
+# Discover the data range so default date pickers and boundary-partial
+# markers (render_suspicious_hourly) work correctly whether the DB is a
+# frozen archive or a live local pipeline.
+_data_range = run_query("""
+    SELECT MIN(ts) AS min_ts, MAX(ts) AS max_ts FROM (
+        SELECT hour AS ts FROM mart_dashboard_suspicious_1h
+        UNION ALL
+        SELECT seen_at_ts AS ts FROM mart_recent_suspicious
+    )
+""")
+if not _data_range.empty:
+    _data_min = _data_range["min_ts"].iloc[0].to_pydatetime()
+    _data_max = _data_range["max_ts"].iloc[0].to_pydatetime()
 else:
-    default_since = datetime.now() - timedelta(days=7)
+    _data_min = datetime.now() - timedelta(days=7)
+    _data_max = datetime.now()
+
+if ARCHIVE_MODE:
+    default_since = _data_min
+    default_until = _data_max
+else:
+    # Cap the 7-day lookback to the actual data start so boundary-partial
+    # detection (since_hour vs data rows) fires on the first visible hour.
+    default_since = max(datetime.now() - timedelta(days=7), _data_min)
     default_until = "now"
 
 live = st.session_state.get("_live", False) and not ARCHIVE_MODE
@@ -967,21 +992,71 @@ def render_c2_malware_chart(key_suffix: str, height: int = 360) -> None:
 def render_suspicious_hourly(key_suffix: str) -> None:
     since_hour = since.replace(minute=0, second=0, microsecond=0)
     until_hour = until.replace(minute=0, second=0, microsecond=0)
+    first_partial = since != since_hour
+    last_partial = until != until_hour
 
-    # Expand the query lower bound to the floored hour so that a partial
-    # boundary hour (e.g. From = 18:20 → 18:00 hour) is included in the
-    # result set and can be marked as partial below.
-    sus_time = q_suspicious_hourly(since_hour, until, issuer).pipe(with_tz)
+    # Main: 1h mart for the floored range. Complete hours use pre-calculated
+    # counts. Boundary partial hours (if any) get patched from the 5min mart.
+    sus_time = q_suspicious_1h(since_hour, until_hour, issuer).pipe(with_tz)
     if sus_time.empty:
         st.info("No flagged certs in the selected range.")
         return
 
-    is_partial = sus_time["is_partial_hour"].copy()
+    # Reindex to an unbroken hourly spine so gaps (pipeline downtime,
+    # certstream disconnects) appear as breaks rather than misleading
+    # diagonal connectors.
+    full_hours = pd.date_range(sus_time["hour"].min(), sus_time["hour"].max(), freq="h")
+    sus_time = (
+        sus_time.set_index("hour")
+        .reindex(full_hours)
+        .rename_axis("hour")
+        .reset_index()
+    )
+    sus_time["flagged"] = sus_time["flagged"].astype("Int64")
+    sus_time["is_partial_hour"] = sus_time["is_partial_hour"].fillna(False)
+    is_partial = pd.Series(False, index=sus_time.index)
 
-    if since != since_hour:
+    # Build hover labels with exact time ranges. Date appears once, followed
+    # by the start-end clock times. Complete hours show the full 60-min
+    # window; partial hours show the actual [since, until) slice.
+    def _range_label(start: datetime, end: datetime) -> str:
+        return f"{start:%Y-%m-%d %H:%M} – {end:%H:%M}"
+
+    sus_time["range_label"] = sus_time["hour"].apply(
+        lambda h: _range_label(h, h + timedelta(hours=1))
+    )
+
+    # Patch boundary hours from the 5min mart so the count only includes
+    # buckets that fall inside [since, until).
+    if first_partial:
+        patch = q_suspicious_5min(since, since_hour + timedelta(hours=1), issuer)
+        if not patch.empty:
+            mask = sus_time["hour"] == since_hour
+            sus_time.loc[mask, "flagged"] = patch["flagged"].iloc[0]
+        sus_time.loc[sus_time["hour"] == since_hour, "range_label"] = (
+            _range_label(since, since_hour + timedelta(hours=1))
+        )
         is_partial = is_partial | (sus_time["hour"] == since_hour)
-    if until != until_hour:
+    if last_partial:
+        # Avoid double-patching when since and until land in the same hour.
+        if not (first_partial and until_hour == since_hour):
+            patch = q_suspicious_5min(until_hour, until, issuer)
+            if not patch.empty:
+                mask = sus_time["hour"] == until_hour
+                sus_time.loc[mask, "flagged"] = patch["flagged"].iloc[0]
+            sus_time.loc[sus_time["hour"] == until_hour, "range_label"] = (
+                _range_label(until_hour, until)
+            )
         is_partial = is_partial | (sus_time["hour"] == until_hour)
+
+    # Safety net for frozen data: if the dbt model's is_partial_hour is all
+    # false (happens when now() is beyond the capture window), mark the last
+    # real-data hour as partial so the pink-diamond visual fires.
+    if not is_partial.any() and len(sus_time) > 0:
+        non_null = sus_time["flagged"].notna()
+        if non_null.any():
+            max_hour = sus_time.loc[non_null, "hour"].max()
+            is_partial = sus_time["hour"] == max_hour
 
     complete = sus_time[~is_partial]
     partial = sus_time[is_partial]
@@ -990,13 +1065,15 @@ def render_suspicious_hourly(key_suffix: str) -> None:
         go.Scatter(
             x=complete["hour"],
             y=complete["flagged"],
+            customdata=complete[["range_label"]],
             mode="lines+markers",
             line=dict(color=ACCENT_CYAN, width=2),
             marker=dict(size=5, color=ACCENT_CYAN),
+            connectgaps=False,
             fill="tozeroy",
             fillcolor="rgba(0,229,255,0.08)",
             name="Hourly count",
-            hovertemplate="<b>%{x|%Y-%m-%d %H:00}</b><br>%{y} flagged<extra></extra>",
+            hovertemplate="<b>%{customdata[0]}</b><br>%{y} flagged<extra></extra>",
         )
     )
     if not partial.empty:
@@ -1004,10 +1081,11 @@ def render_suspicious_hourly(key_suffix: str) -> None:
             go.Scatter(
                 x=partial["hour"],
                 y=partial["flagged"],
+                customdata=partial[["range_label"]],
                 mode="markers",
                 marker=dict(size=9, color=ACCENT_PINK, symbol="diamond-open"),
                 name="Partial hour",
-                hovertemplate="<b>%{x|%Y-%m-%d %H:00}</b><br>%{y} flagged (partial window)<extra></extra>",
+                hovertemplate="<b>%{customdata[0]}</b><br>%{y} flagged (partial window)<extra></extra>",
             )
         )
     fig.update_layout(height=300, **CHART)
@@ -1015,8 +1093,7 @@ def render_suspicious_hourly(key_suffix: str) -> None:
 
 
 def render_top_issuers(key_suffix: str) -> None:
-    since_hour = since.replace(minute=0, second=0, microsecond=0)
-    issuers = q_top_issuers(since_hour, until).pipe(with_tz)
+    issuers = q_top_issuers(since, until).pipe(with_tz)
     if issuers.empty:
         st.info("No data for this range.")
         return
@@ -1154,7 +1231,7 @@ def stream_panel() -> None:
         render_suspicious_hourly("stream")
         st.markdown(
             "<div class='source'>"
-            "stg_suspicious_certs &middot; mart_dashboard_suspicious_hourly flags partial hours."
+            "stg_suspicious_certs &middot; mart_dashboard_suspicious_5min for the chart; mart_dashboard_suspicious_1h for top issuers."
             "</div>",
             unsafe_allow_html=True,
         )

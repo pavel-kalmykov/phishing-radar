@@ -79,7 +79,7 @@ flowchart LR
     MD --> ST
 ```
 
-The pipeline processed ~200 certificates per second through a PyFlink detector with 1-minute tumbling windows, applying Damerau-Levenshtein and Jaro-Winkler similarity to catch typosquatting and homoglyph attacks against a configured brand list. Detections landed in MotherDuck via a Kafka sink with idempotency guarantees, then 12 dbt marts pre-aggregated the data for the dashboard.
+The pipeline processed ~200 certificates per second through a PyFlink detector with 1-minute tumbling windows, applying Damerau-Levenshtein and Jaro-Winkler similarity to catch typosquatting and homoglyph attacks against a configured brand list. Detections landed in MotherDuck via a Kafka sink with idempotency guarantees, then 18 dbt marts pre-aggregated the data for the dashboard.
 
 ## Archive mode
 
@@ -94,7 +94,7 @@ The cloud deployment ended on 2026-05-05 when managed services (Redpanda Cloud, 
 | Batch ingestion | dlt | CISA KEV, Feodo, ThreatFox, Spamhaus, MITRE, MaxMind |
 | Orchestration | Kestra | Scheduled batch flows |
 | Warehouse | DuckDB | 17 GB during live runs; 97 MB archive snapshot |
-| Transformations | dbt (dbt-duckdb) | 12 pre-aggregated marts |
+| Transformations | dbt (dbt-duckdb) | 18 pre-aggregated marts |
 | Dashboard | Streamlit | Archive mode ($0) or local |
 
 ## Data sources
@@ -157,7 +157,7 @@ The full setup writes to `data/local.duckdb` (expect it to grow to tens of GB ov
 ## Tests and quality
 
 - **pytest**: 26 assertions covering the typosquatting detector and every batch ingester parser (retry/backoff, mocked HTTP responses).
-- **dbt**: 13 schema tests + 3 singular tests (IP format sanity, pipeline health invariants, base models not empty).
+- **dbt**: 22 schema tests + 4 singular tests (IP format sanity, pipeline health invariants, CVE date sanity, base models not empty).
 - **ruff**: linting in CI.
 - **Detector design**: `docs/detection_alternatives.md` documents the migration from Levenshtein to Damerau-Levenshtein + Jaro-Winkler, and why MinHash was dropped.
 - **Memory profiling**: `docs/memory_profile.md` records RSS peaks per service and right-sizing decisions.

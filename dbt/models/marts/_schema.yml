@@ -48,8 +48,8 @@ models:
     description: Per-minute suspicious-cert ratio per issuing CA (from Flink windows)
   - name: mart_dashboard_kpis
     description: Single-row headline KPIs for the dashboard hero strip
-  - name: mart_dashboard_suspicious_hourly
-    description: Per-hour, per-issuer volume of flagged certs with partial-hour flag
+  - name: mart_dashboard_suspicious_1h
+    description: Per-hour, per-issuer volume rolled up from 5-min mart, with partial-hour flag
     columns:
       - name: hour
         tests:
@@ -60,6 +60,17 @@ models:
       - name: flagged
       - name: unique_domains
       - name: is_partial_hour
+  - name: mart_dashboard_suspicious_5min
+    description: Per-5-minute, per-issuer volume of flagged certs -- base grain for the time-series chart
+    columns:
+      - name: minute
+        tests:
+          - not_null
+      - name: issuer_cn
+        tests:
+          - not_null
+      - name: flagged
+      - name: unique_domains
   - name: mart_dashboard_brand_daily
     description: Per-day, per-issuer, per-brand counts for the top-brands chart
     columns:
@@ -74,7 +85,7 @@ models:
           - not_null
       - name: hits
   - name: mart_dashboard_top_issuers
-    description: Top 20 CAs that signed flagged certs, with counts (deprecated — superseded by mart_dashboard_suspicious_hourly)
+    description: Top 20 CAs that signed flagged certs, with counts (deprecated — superseded by mart_dashboard_suspicious_1h)
   - name: mart_dashboard_kev_vendors
     description: Top KEV vendors with explicit ransomware ratio percentage
   - name: mart_dashboard_kev_monthly

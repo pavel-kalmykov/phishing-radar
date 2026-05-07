@@ -50,7 +50,8 @@ jobs:
           mart_pipeline_health
           mart_recent_suspicious
           mart_c2_active
-          mart_dashboard_suspicious_hourly
+          mart_dashboard_suspicious_1h
+          mart_dashboard_suspicious_5min
           mart_dashboard_brand_daily
           --exclude
           assert_pipeline_healthy
