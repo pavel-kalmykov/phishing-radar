@@ -1,106 +1,188 @@
 # Phishing Radar
 
-Detecta infraestructura de phishing en tiempo real a partir del firehose de Certificate Transparency, enriquecida con datos de amenazas batch.
+Real-time phishing infrastructure detector. Watches the Certificate Transparency firehose, flags impersonation attempts as they happen, and correlates with active malware intelligence to give each detection operational context.
 
-Data Engineering Zoomcamp 2026 capstone.
+Capstone for the DataTalksClub [Data Engineering Zoomcamp 2026](https://github.com/DataTalksClub/data-engineering-zoomcamp).
 
-## La historia
+## The story
 
-Cada vez que un atacante monta un sitio de phishing necesita un certificado TLS (si no, Chrome lo bloquea). Esos certificados se publican en los logs de Certificate Transparency (CT) casi en tiempo real. Si observas el firehose, ves la infraestructura maliciosa mientras la están desplegando, antes de que llegue a los buzones de las víctimas.
+Every phishing site needs a TLS certificate. Modern browsers mark non-HTTPS sites as unsafe, so attackers routinely request a certificate for their lookalike domain from Let's Encrypt or any other public CA. Those certificates are published to Certificate Transparency logs within seconds of issuance.
 
-Este proyecto ingiere ese firehose (via [CertStream](https://certstream.calidog.io/)), detecta typosquatting contra marcas populares, y correla contra feeds batch de amenazas (C2 de botnets, CVEs explotados, rangos IP hijacked, ATT&CK) para enriquecer cada detección con contexto operativo.
+If you tail that firehose, you see the scam infrastructure while it is being built, before the first phishing email lands in anyone's inbox. Phishing Radar tails it for you.
 
-## Arquitectura
+**Two questions this project answers:**
+
+1. Which brands are being impersonated right now?
+2. Of all the suspicious certificates appearing in the feed, which ones are hosted on infrastructure we already know is bad (active botnet C2, hijacked IP space, vendors with unpatched CVEs being exploited)?
+
+## Architecture
 
 ```mermaid
 flowchart LR
-    subgraph streaming[Streaming lane]
-        CS[CertStream WebSocket] -->|~200 ev/s| PROD[Python producer]
-        PROD -->|certstream_events| RP[Redpanda]
-        RP --> FLINK[PyFlink job<br/>typosquatting +<br/>tumbling windows]
-        FLINK --> GCS1[(GCS raw/)]
-        GCS1 --> BQ1[(BigQuery<br/>raw_certstream)]
+    subgraph src[Public sources]
+        CT[Certificate Transparency logs]
+        KEV[CISA KEV]
+        FEO[abuse.ch Feodo Tracker]
+        SPAM[Spamhaus DROP/EDROP]
+        MITRE[MITRE ATT&CK]
+        MM[MaxMind GeoLite2]
     end
 
-    subgraph batch[Batch lane]
-        KEV[CISA KEV] --> DLT[dlt pipelines]
-        FEODO[Feodo Tracker] --> DLT
-        SPAM[Spamhaus DROP] --> DLT
-        MITRE[MITRE ATT&CK] --> DLT
-        GEO[MaxMind GeoLite2] --> DLT
-        DLT --> BQ2[(BigQuery<br/>raw_batch)]
-        KESTRA[Kestra daily flow] --> DLT
+    subgraph fly[Fly.io apps always-on]
+        CS[certstream-server-go]
+        PROD[Python producer]
+        DET[Python detector<br/>typosquatting + 1 min windows]
+        SINK[Kafka to MotherDuck sink]
+        KES[Kestra orchestrator]
     end
 
-    subgraph transform[Transform]
-        BQ1 --> DBT[dbt models<br/>staging + marts]
-        BQ2 --> DBT
-        GN[GreyNoise API] -->|enrichment| DBT
-        DBT --> MARTS[(BigQuery marts)]
+    subgraph cloud[Managed services]
+        RP[(Redpanda Cloud<br/>Kafka broker)]
+        MD[(MotherDuck<br/>DuckDB warehouse)]
+        ST[Streamlit Cloud]
     end
 
-    MARTS --> ST[Streamlit dashboard<br/>3 pages]
+    CT --> CS
+    CS -->|WebSocket| PROD
+    PROD -->|certstream_events| RP
+    RP --> DET
+    DET -->|suspicious_certs<br/>cert_stats_1min| RP
+    RP --> SINK
+    SINK --> MD
+
+    KEV --> KES
+    FEO --> KES
+    SPAM --> KES
+    MITRE --> KES
+    MM --> KES
+    KES -->|dlt + dbt| MD
+
+    MD --> ST
 ```
 
 ## Stack
 
-| Capa | Herramienta |
-|---|---|
-| Streaming broker | Redpanda (Kafka-compatible) |
-| Stream processing | PyFlink |
-| Batch ingestion | dlt |
-| Orchestration | Kestra |
-| Data warehouse | BigQuery (particionado por día, clusterizado) |
-| Transformations | dbt |
-| Dashboard | Streamlit |
-| IaC | Terraform |
-| CI/CD | GitHub Actions |
-| Package manager | uv |
-| Linting | ruff |
+| Layer | Tool | Where it runs |
+|---|---|---|
+| Stream broker | Redpanda Cloud (serverless) | AWS eu-central-1 |
+| Stream processing | Python (Kafka consumer + producer with 1-min tumbling windows) | Fly.io |
+| PyFlink reference job | `apache-flink` Table API | shipped in `streaming/flink/phishing_detector.py`; Python detector is the working twin |
+| Batch ingestion | `dlt` | Fly.io (Kestra tasks) |
+| Orchestration | Kestra | Fly.io |
+| Warehouse | MotherDuck (DuckDB SaaS) | AWS eu-central-1 |
+| Transformations | dbt (`dbt-duckdb`) | Fly.io (Kestra tasks) |
+| Dashboard | Streamlit | Streamlit Cloud |
+| IaC / deploys | `fly.toml` + GitHub Actions | n/a |
+| Language | Python 3.11 (+ `uv`, `ruff`) | n/a |
 
-## Fuentes de datos
+## Data sources
 
-| Fuente | Tipo | Cadencia | Auth |
+| Source | Type | Cadence | Auth |
 |---|---|---|---|
-| CertStream | WebSocket | ~200 ev/s | Sin auth |
-| CISA KEV | JSON batch | Diario | Sin auth |
-| Feodo Tracker | JSON batch | Cada minutos | Sin auth |
-| Spamhaus DROP | TXT batch | Diario | Sin auth |
-| MITRE ATT&CK STIX | JSON batch | Mensual | Sin auth |
-| MaxMind GeoLite2 | MMDB batch | Mensual | Registro gratis |
-| GreyNoise Community | REST (enrichment) | On-demand | Sin auth |
+| Certificate Transparency logs (via [certstream-server-go](https://github.com/d-Rickyy-b/certstream-server-go)) | WebSocket | ~200 certs/s | None |
+| CISA KEV catalogue | JSON dump | daily | None |
+| abuse.ch Feodo Tracker | JSON dump | minutes | None |
+| Spamhaus DROP / EDROP | TXT | daily | None |
+| MITRE ATT&CK (Enterprise) | STIX 2 JSON | monthly | None |
+| MaxMind GeoLite2 (CSV) | CSV zip | weekly | Free registration |
 
-## Arrancar local
+## Cloud footprint
 
-```bash
-# Requisitos: Python 3.11+, Docker, uv (https://docs.astral.sh/uv/)
-make setup           # instalar deps
-make up              # arrancar Redpanda + Kestra
-make producer &      # background CertStream producer
-make flink           # consumer Flink
-make batch           # ingestas batch
-make dbt-run         # transformaciones
-make dashboard       # lanza Streamlit en localhost:8501
-```
+| Service | Tier | Role |
+|---|---|---|
+| Fly.io | 5 machines (4x shared-cpu-1x@256MB + 1x@768MB for Kestra) | Always-on producer, detector, sink, CT stream aggregator, Kestra |
+| Redpanda Cloud | Serverless free cluster | Kafka broker + 3 topics |
+| MotherDuck | Free tier (10 GB) | Warehouse |
+| Streamlit Cloud | Free tier | Dashboard hosting |
 
-Consolas locales:
-- Redpanda Console: http://localhost:8080
-- Kestra UI: http://localhost:8081
-- Streamlit: http://localhost:8501
+Expected monthly cost: around 10 EUR (Kestra VM) plus 4 x ~2 EUR for the small always-on machines. Everything else is on free tiers.
 
-## Cloud (GCP)
+## Running it locally
+
+Requirements: Python 3.11+, Docker, [`uv`](https://docs.astral.sh/uv/), [`just`](https://github.com/casey/just).
 
 ```bash
-cd terraform
-terraform init
-cp terraform.tfvars.example terraform.tfvars  # edita con tu project
-terraform apply
+cp .env.example .env        # fill in your MOTHERDUCK_TOKEN (plus Redpanda creds if you have them)
+just setup                   # install Python deps with uv
+just up                      # docker-compose starts Redpanda + certstream-server-go locally
+just producer &              # CertStream -> Kafka producer
+just detect &                # typosquatting detector
+just sink &                  # Kafka -> MotherDuck
+just batch                   # one-shot ingestion of CISA KEV, Feodo, Spamhaus, MITRE, MaxMind
+just dbt-run                 # transformations
+just dashboard               # Streamlit at localhost:8501
 ```
 
-## Reproducibilidad
+Local consoles:
 
-El proyecto está pensado para clonar y arrancar con `make up` sin más intervención. Las credenciales se pasan via variables de entorno o service account keys; hay `.env.example` con todos los valores requeridos.
+- Redpanda console: http://localhost:8082
+- CertStream server: http://localhost:8090
+- Streamlit dashboard: http://localhost:8501
 
-## Licencia
+## Deploy to cloud
+
+```bash
+flyctl apps create phishing-radar-certstream
+flyctl apps create phishing-radar-producer
+flyctl apps create phishing-radar-detector
+flyctl apps create phishing-radar-sink
+flyctl apps create phishing-radar-kestra
+
+# Secrets (replace values)
+flyctl secrets set --app phishing-radar-producer KAFKA_BOOTSTRAP=... KAFKA_SASL_MECHANISM=SCRAM-SHA-256 KAFKA_SASL_USERNAME=... KAFKA_SASL_PASSWORD=...
+flyctl secrets set --app phishing-radar-detector KAFKA_BOOTSTRAP=... KAFKA_SASL_MECHANISM=SCRAM-SHA-256 KAFKA_SASL_USERNAME=... KAFKA_SASL_PASSWORD=...
+flyctl secrets set --app phishing-radar-sink     KAFKA_BOOTSTRAP=... KAFKA_SASL_MECHANISM=SCRAM-SHA-256 KAFKA_SASL_USERNAME=... KAFKA_SASL_PASSWORD=... MOTHERDUCK_TOKEN=...
+flyctl secrets set --app phishing-radar-kestra   KAFKA_BOOTSTRAP=... KAFKA_SASL_MECHANISM=SCRAM-SHA-256 KAFKA_SASL_USERNAME=... KAFKA_SASL_PASSWORD=... MOTHERDUCK_TOKEN=... MAXMIND_LICENSE_KEY=...
+
+# Deploy
+flyctl deploy --config deploy/certstream/fly.toml --app phishing-radar-certstream --ha=false
+flyctl deploy --config deploy/producer/fly.toml   --app phishing-radar-producer   --dockerfile Dockerfile --ha=false
+flyctl deploy --config deploy/detector/fly.toml   --app phishing-radar-detector   --dockerfile Dockerfile --ha=false
+flyctl deploy --config deploy/sink/fly.toml       --app phishing-radar-sink       --dockerfile Dockerfile --ha=false
+flyctl volumes create kestra_data --region cdg --size 1 --app phishing-radar-kestra
+flyctl deploy --config deploy/kestra/fly.toml     --app phishing-radar-kestra     --ha=false
+```
+
+The `.github/workflows/deploy.yml` GitHub Action redeploys the three Python services on every push to `main`.
+
+## Dashboard
+
+Hosted: **<https://phishing-radar.streamlit.app>** (after you connect Streamlit Cloud to the GitHub repo and set the `MOTHERDUCK_TOKEN` secret).
+
+Three pages:
+
+1. **Landing**: the story plus the headline numbers (CVEs under active exploitation, online C2s, hijacked IP ranges, MITRE-tracked malware, suspicious certificates seen).
+2. **Batch threat intel**: KEV trend, top vendors, active C2 breakdown, Spamhaus buckets.
+3. **Live phishing radar**: most impersonated brands (last 7d), per-CA suspicious-cert ratio per minute, latest flagged certificates.
+
+## Repository layout
+
+```
+.
+├── batch/                    # dlt pipelines (one module per source)
+├── dashboard/                # Streamlit app
+├── dbt/                      # dbt project (duckdb adapter, MotherDuck target)
+├── deploy/                   # fly.toml per Fly app
+├── kestra/flows/             # Kestra flow definitions (YAML)
+├── streaming/
+│   ├── producer/             # CertStream -> Kafka
+│   ├── flink/                # detection logic + PyFlink reference job + Python twin
+│   └── sink/                 # Kafka -> MotherDuck
+├── tests/                    # pytest suite
+├── Dockerfile                # single image for all Python services
+├── docker-compose.yml        # Redpanda + certstream-server-go + Kestra for local dev
+├── justfile                  # cross-OS task runner
+├── pyproject.toml
+└── README.md
+```
+
+## Tests and quality
+
+- `pytest` covers the typosquatting detector (17 assertions: positives, legitimate domains, edge cases).
+- `ruff check` + `ruff format --check` in CI.
+- `dbt test` runs 11 schema tests plus 2 singular tests (IP format, KEV date sanity).
+- CI workflow at `.github/workflows/ci.yml`.
+
+## License
 
 MIT.
